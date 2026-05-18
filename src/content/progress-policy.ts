@@ -31,3 +31,20 @@ export function partitionPageItemsForCatchup<T>(
     sawSeenDownloadable: true,
   };
 }
+
+export type PageStopReason = 'continue' | 'tail' | 'catchup' | 'failure' | 'interrupted';
+
+export function classifyPageStop(input: {
+  runActive: boolean;
+  advancedCursor: boolean;
+  nextOffsetId: number;
+  sawSeenDownloadable: boolean;
+  hadFailures: boolean;
+}): { complete: boolean; reason: PageStopReason } {
+  if (!input.runActive) return { complete: false, reason: 'interrupted' };
+  if (input.hadFailures) return { complete: false, reason: 'failure' };
+  if (!input.advancedCursor) return { complete: false, reason: 'interrupted' };
+  if (input.nextOffsetId === 0) return { complete: true, reason: 'tail' };
+  if (input.sawSeenDownloadable) return { complete: true, reason: 'catchup' };
+  return { complete: false, reason: 'continue' };
+}

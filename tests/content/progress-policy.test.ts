@@ -23,4 +23,16 @@ describe('content progress policy', () => {
     expect(result.releasableItems).toEqual([{ id: 3 }, { id: 4 }]);
     expect(result.sawSeenDownloadable).toBe(true);
   });
+
+  test('classifies failure-blocked page stop as not complete', async () => {
+    const { classifyPageStop } = await import('../../src/content/progress-policy');
+
+    expect(classifyPageStop({
+      runActive: true,
+      advancedCursor: false,
+      nextOffsetId: 50,
+      sawSeenDownloadable: false,
+      hadFailures: true,
+    })).toEqual({ complete: false, reason: 'failure' });
+  });
 });

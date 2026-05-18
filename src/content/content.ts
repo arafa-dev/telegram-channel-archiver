@@ -6,7 +6,7 @@ import { BridgeClient } from './bridge-client';
 import { LifecycleWatcher } from './lifecycle';
 import { DownloadPool } from './pool';
 import { finalizePageProgress } from './progress';
-import { partitionPageItemsForCatchup, shouldAdvancePageCursor, shouldContinueAfterPage } from './progress-policy';
+import { classifyPageStop, partitionPageItemsForCatchup, shouldAdvancePageCursor } from './progress-policy';
 import { clearRunGlobalsIfCurrent } from './run-resources';
 import { callSw, openKeepalivePort } from './sw-client';
 import { recordArchiveItemViaTransfer } from './transfer';
@@ -121,6 +121,8 @@ async function onStart(): Promise<void> {
 
     const seenIds = unpackSeenIds(state.seenIdsPacked);
     let offsetId = state.cursor.offsetId;
+    let reachedCompletionBoundary = false;
+    let stoppedByFailure = false;
 
     while (isRunActive(peer.peerId, runId)) {
       await waitIfPaused();
@@ -166,10 +168,16 @@ async function onStart(): Promise<void> {
       });
 
       const advancedCursor = progress.newOffsetId !== offsetId;
-      if (
-        !isRunActive(peer.peerId, runId) ||
-        !shouldContinueAfterPage({ nextOffsetId: progress.newOffsetId, advancedCursor, sawSeenDownloadable })
-      ) {
+      const stop = classifyPageStop({
+        runActive: isRunActive(peer.peerId, runId),
+        advancedCursor,
+        nextOffsetId: progress.newOffsetId,
+        sawSeenDownloadable,
+        hadFailures: pageHadFailure,
+      });
+      reachedCompletionBoundary = stop.complete;
+      stoppedByFailure = stop.reason === 'failure';
+      if (stop.reason !== 'continue') {
         break;
       }
       offsetId = progress.newOffsetId;
@@ -177,9 +185,12 @@ async function onStart(): Promise<void> {
     }
 
     await runPool.drain();
-    if (isRunActive(peer.peerId, runId)) {
+    if (isRunActive(peer.peerId, runId) && reachedCompletionBoundary) {
       await callSw({ kind: 'complete', peerId: peer.peerId });
       setView({ status: 'completed' });
+    } else if (isRunActive(peer.peerId, runId) && stoppedByFailure) {
+      await callSw({ kind: 'flushPersist', peerId: peer.peerId }).catch(() => undefined);
+      setView({ status: 'error', error: 'Archive stopped after failed downloads. Retry this channel to continue.' });
     }
   } catch (e: unknown) {
     if (isRunActive(peer.peerId, runId)) setView({ status: 'error', error: errorMessage(e) });
