@@ -12,7 +12,13 @@ type TransferState = {
   totalBytes: number;
   receivedBytes: number;
   chunks: Uint8Array[];
+  ttlTimer: ReturnType<typeof setTimeout>;
 };
+
+export const OFFSCREEN_MAX_BASE64_CHUNK_CHARS = 72 * 1024;
+export const OFFSCREEN_MAX_TRANSFER_BYTES = 512 * 1024 * 1024;
+export const OFFSCREEN_MAX_ACTIVE_TRANSFERS = 8;
+export const OFFSCREEN_TRANSFER_TTL_MS = 5 * 60 * 1000;
 
 const transfers = new Map<string, TransferState>();
 
@@ -75,15 +81,25 @@ function decodeBase64(data: string): Uint8Array {
   return bytes;
 }
 
-function concatChunks(chunks: Uint8Array[], totalBytes: number): ArrayBuffer {
-  const buffer = new ArrayBuffer(totalBytes);
-  const bytes = new Uint8Array(buffer);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return buffer;
+function deleteTransfer(transferId: string): void {
+  const transfer = transfers.get(transferId);
+  if (!transfer) return;
+  clearTimeout(transfer.ttlTimer);
+  transfers.delete(transferId);
+}
+
+function createTransfer(transferId: string, mimeType: string, totalBytes: number): TransferState {
+  const transfer: TransferState = {
+    mimeType,
+    totalBytes,
+    receivedBytes: 0,
+    chunks: [],
+    ttlTimer: setTimeout(() => {
+      transfers.delete(transferId);
+    }, OFFSCREEN_TRANSFER_TTL_MS),
+  };
+  transfers.set(transferId, transfer);
+  return transfer;
 }
 
 chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (response: OffscreenResponse<unknown>) => void) => {
@@ -100,7 +116,16 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (respo
         sendResponse({ ok: false, error: 'TRANSFER_ALREADY_EXISTS' });
         return false;
       }
-      transfers.set(msg.transferId, { mimeType: msg.mimeType, totalBytes: msg.totalBytes, receivedBytes: 0, chunks: [] });
+      if (msg.totalBytes > OFFSCREEN_MAX_TRANSFER_BYTES) {
+        sendResponse({ ok: false, error: 'TRANSFER_TOO_LARGE' });
+        return false;
+      }
+      if (transfers.size >= OFFSCREEN_MAX_ACTIVE_TRANSFERS) {
+        sendResponse({ ok: false, error: 'TOO_MANY_TRANSFERS' });
+        return false;
+      }
+
+      createTransfer(msg.transferId, msg.mimeType, msg.totalBytes);
       sendResponse({ ok: true, value: null });
       return false;
     }
@@ -111,13 +136,20 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (respo
         sendResponse({ ok: false, error: 'UNKNOWN_TRANSFER' });
         return false;
       }
+      if (msg.data.length > OFFSCREEN_MAX_BASE64_CHUNK_CHARS) {
+        deleteTransfer(msg.transferId);
+        sendResponse({ ok: false, error: 'CHUNK_TOO_LARGE' });
+        return false;
+      }
       if (msg.index !== transfer.chunks.length) {
+        deleteTransfer(msg.transferId);
         sendResponse({ ok: false, error: 'INVALID_CHUNK_ORDER' });
         return false;
       }
 
       const chunk = decodeBase64(msg.data);
       if (transfer.receivedBytes + chunk.byteLength > transfer.totalBytes) {
+        deleteTransfer(msg.transferId);
         sendResponse({ ok: false, error: 'TRANSFER_SIZE_MISMATCH' });
         return false;
       }
@@ -134,22 +166,21 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (respo
         sendResponse({ ok: false, error: 'UNKNOWN_TRANSFER' });
         return false;
       }
-      transfers.delete(msg.transferId);
+      deleteTransfer(msg.transferId);
 
       if (transfer.receivedBytes !== transfer.totalBytes) {
         sendResponse({ ok: false, error: 'TRANSFER_SIZE_MISMATCH' });
         return false;
       }
 
-      const bytes = concatChunks(transfer.chunks, transfer.totalBytes);
-      const blob = new Blob([bytes], { type: transfer.mimeType });
+      const blob = new Blob(transfer.chunks as unknown as BlobPart[], { type: transfer.mimeType });
       const url = URL.createObjectURL(blob);
       sendResponse({ ok: true, value: { url } });
       return false;
     }
 
     if (msg.kind === 'bytesAbort') {
-      transfers.delete(msg.transferId);
+      deleteTransfer(msg.transferId);
       sendResponse({ ok: true, value: null });
       return false;
     }

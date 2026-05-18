@@ -160,6 +160,26 @@ describe('background offscreen client', () => {
     await expect(bytesToObjectUrl(new ArrayBuffer(0), 'text/plain')).rejects.toThrow('OFFSCREEN_FAILED');
   });
 
+  test('aborts transfer when bytesEnd returns an invalid URL response', async () => {
+    const { runtime } = await installChromeBoundaryMock({ hasDocument: vi.fn(async () => true) });
+    const { bytesToObjectUrl } = await importClient();
+    const sendMessage = runtime.sendMessage.getMockImplementation();
+    if (!sendMessage) throw new Error('sendMessage mock was not installed');
+    runtime.sendMessage.mockImplementation(async (message: unknown) => {
+      if ((message as { kind?: string }).kind === 'bytesEnd') {
+        return { ok: true, value: { url: 42 } };
+      }
+      return sendMessage(message);
+    });
+
+    await expect(bytesToObjectUrl(new ArrayBuffer(0), 'text/plain')).rejects.toThrow('OFFSCREEN_INVALID_RESPONSE');
+    expect(runtime.sendMessage).toHaveBeenCalledWith({
+      target: 'offscreen',
+      kind: 'bytesAbort',
+      transferId: expect.any(String),
+    });
+  });
+
   test('sends revoke messages after ensuring the offscreen document exists', async () => {
     const { runtime } = await installChromeBoundaryMock({ hasDocument: vi.fn(async () => true) });
     const { revokeObjectUrl } = await importClient();

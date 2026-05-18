@@ -37,6 +37,7 @@ function base64(bytes: number[]) {
 
 describe('offscreen document message bridge', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -128,7 +129,7 @@ describe('offscreen document message bridge', () => {
     });
     expect(send(listener, { target: 'offscreen', kind: 'bytesEnd', transferId: 'transfer-1' })).toHaveBeenCalledWith({
       ok: false,
-      error: 'TRANSFER_SIZE_MISMATCH',
+      error: 'UNKNOWN_TRANSFER',
     });
   });
 
@@ -169,6 +170,89 @@ describe('offscreen document message bridge', () => {
     });
 
     expect(send(listener, { target: 'offscreen', kind: 'revoke', url: 'blob:extension/test' })).toHaveBeenCalledWith({ ok: false, error: 'revoke failed' });
+  });
+
+  test('rejects transfers that exceed receiver limits', async () => {
+    const listener = await importOffscreenWithListener();
+    const oversizedTotalBytes = 512 * 1024 * 1024 + 1;
+
+    expect(send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: 'huge', mimeType: 'application/octet-stream', totalBytes: oversizedTotalBytes })).toHaveBeenCalledWith({
+      ok: false,
+      error: 'TRANSFER_TOO_LARGE',
+    });
+
+    send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: 'transfer-1', mimeType: 'application/octet-stream', totalBytes: 100_000 });
+    expect(send(listener, { target: 'offscreen', kind: 'bytesChunk', transferId: 'transfer-1', index: 0, data: 'A'.repeat(80 * 1024) })).toHaveBeenCalledWith({
+      ok: false,
+      error: 'CHUNK_TOO_LARGE',
+    });
+  });
+
+  test('rejects new transfers when the active transfer limit is reached', async () => {
+    const listener = await importOffscreenWithListener();
+
+    for (let index = 0; index < 8; index += 1) {
+      expect(send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: `transfer-${index}`, mimeType: 'text/plain', totalBytes: 0 })).toHaveBeenCalledWith({
+        ok: true,
+        value: null,
+      });
+    }
+
+    expect(send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: 'transfer-8', mimeType: 'text/plain', totalBytes: 0 })).toHaveBeenCalledWith({
+      ok: false,
+      error: 'TOO_MANY_TRANSFERS',
+    });
+
+    for (let index = 0; index < 8; index += 1) {
+      send(listener, { target: 'offscreen', kind: 'bytesAbort', transferId: `transfer-${index}` });
+    }
+  });
+
+  test('cleans up abandoned transfers after TTL and permits id reuse', async () => {
+    vi.useFakeTimers();
+    const listener = await importOffscreenWithListener();
+
+    expect(send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: 'transfer-1', mimeType: 'text/plain', totalBytes: 1 })).toHaveBeenCalledWith({
+      ok: true,
+      value: null,
+    });
+    expect(send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: 'transfer-1', mimeType: 'text/plain', totalBytes: 1 })).toHaveBeenCalledWith({
+      ok: false,
+      error: 'TRANSFER_ALREADY_EXISTS',
+    });
+
+    vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+
+    expect(send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: 'transfer-1', mimeType: 'text/plain', totalBytes: 1 })).toHaveBeenCalledWith({
+      ok: true,
+      value: null,
+    });
+  });
+
+  test('uses accumulated chunks directly when creating the Blob', async () => {
+    const listener = await importOffscreenWithListener();
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:extension/test');
+    const blobParts: unknown[][] = [];
+    const RealBlob = Blob;
+    class RecordingBlob extends RealBlob {
+      constructor(parts?: BlobPart[], options?: BlobPropertyBag) {
+        blobParts.push([...(parts ?? [])]);
+        super(parts, options);
+      }
+    }
+    vi.stubGlobal('Blob', RecordingBlob);
+
+    send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: 'transfer-1', mimeType: 'text/plain', totalBytes: 2 });
+    send(listener, { target: 'offscreen', kind: 'bytesChunk', transferId: 'transfer-1', index: 0, data: base64([1]) });
+    send(listener, { target: 'offscreen', kind: 'bytesChunk', transferId: 'transfer-1', index: 1, data: base64([2]) });
+
+    expect(send(listener, { target: 'offscreen', kind: 'bytesEnd', transferId: 'transfer-1' })).toHaveBeenCalledWith({
+      ok: true,
+      value: { url: 'blob:extension/test' },
+    });
+    expect(blobParts[0]).toHaveLength(2);
+    expect(blobParts[0]?.every((part) => part instanceof Uint8Array)).toBe(true);
+    expect(createObjectURL).toHaveBeenCalledOnce();
   });
 });
 

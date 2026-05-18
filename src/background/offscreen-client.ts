@@ -90,8 +90,8 @@ export async function bytesToObjectUrl(bytes: ArrayBuffer, mimeType: string): Pr
       },
       'OFFSCREEN_FAILED'
     );
-    complete = true;
     if (typeof value.url !== 'string') throw new Error('OFFSCREEN_INVALID_RESPONSE');
+    complete = true;
     return value.url;
   } catch (error) {
     if (!complete) {
