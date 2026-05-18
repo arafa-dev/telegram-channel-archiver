@@ -25,36 +25,55 @@ async function importOffscreenWithListener() {
   return listener;
 }
 
+function send(listener: RuntimeListener, msg: unknown) {
+  const sendResponse = vi.fn();
+  listener(msg, { id: 'extension-id' }, sendResponse);
+  return sendResponse;
+}
+
+function base64(bytes: number[]) {
+  return btoa(String.fromCharCode(...bytes));
+}
+
 describe('offscreen document message bridge', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
-  test('converts ArrayBuffer payloads into object URLs', async () => {
+  test('reconstructs chunked bytes into an object URL', async () => {
     const listener = await importOffscreenWithListener();
     const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:extension/test');
-    const bytes = new Uint8Array([1, 2, 3]).buffer;
-    const sendResponse = vi.fn();
 
-    listener({ target: 'offscreen', kind: 'bytesToUrl', bytes, mimeType: 'image/png' }, { id: 'extension-id' }, sendResponse);
+    expect(
+      send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: 'transfer-1', mimeType: 'image/png', totalBytes: 5 })
+    ).toHaveBeenCalledWith({ ok: true, value: null });
+    expect(send(listener, { target: 'offscreen', kind: 'bytesChunk', transferId: 'transfer-1', index: 0, data: base64([1, 2]) })).toHaveBeenCalledWith({
+      ok: true,
+      value: null,
+    });
+    expect(send(listener, { target: 'offscreen', kind: 'bytesChunk', transferId: 'transfer-1', index: 1, data: base64([3, 4, 5]) })).toHaveBeenCalledWith({
+      ok: true,
+      value: null,
+    });
+    expect(send(listener, { target: 'offscreen', kind: 'bytesEnd', transferId: 'transfer-1' })).toHaveBeenCalledWith({
+      ok: true,
+      value: { url: 'blob:extension/test' },
+    });
 
     expect(createObjectURL).toHaveBeenCalledOnce();
     const blob = createObjectURL.mock.calls[0]?.[0];
     expect(blob).toBeInstanceOf(Blob);
     expect((blob as Blob).type).toBe('image/png');
-    expect(sendResponse).toHaveBeenCalledWith({ ok: true, value: { url: 'blob:extension/test' } });
+    await expect((blob as Blob).arrayBuffer()).resolves.toEqual(new Uint8Array([1, 2, 3, 4, 5]).buffer);
   });
 
   test('revokes object URLs', async () => {
     const listener = await importOffscreenWithListener();
     const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
-    const sendResponse = vi.fn();
 
-    listener({ target: 'offscreen', kind: 'revoke', url: 'blob:extension/test' }, { id: 'extension-id' }, sendResponse);
-
+    expect(send(listener, { target: 'offscreen', kind: 'revoke', url: 'blob:extension/test' })).toHaveBeenCalledWith({ ok: true, value: null });
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:extension/test');
-    expect(sendResponse).toHaveBeenCalledWith({ ok: true, value: null });
   });
 
   test('ignores messages from other senders and targets', async () => {
@@ -62,8 +81,8 @@ describe('offscreen document message bridge', () => {
     const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:extension/test');
     const sendResponse = vi.fn();
 
-    listener({ target: 'offscreen', kind: 'bytesToUrl', bytes: new ArrayBuffer(0), mimeType: 'text/plain' }, { id: 'other' }, sendResponse);
-    listener({ target: 'background', kind: 'bytesToUrl', bytes: new ArrayBuffer(0), mimeType: 'text/plain' }, { id: 'extension-id' }, sendResponse);
+    listener({ target: 'offscreen', kind: 'bytesBegin', transferId: 'transfer-1', mimeType: 'text/plain', totalBytes: 0 }, { id: 'other' }, sendResponse);
+    listener({ target: 'background', kind: 'bytesBegin', transferId: 'transfer-1', mimeType: 'text/plain', totalBytes: 0 }, { id: 'extension-id' }, sendResponse);
 
     expect(createObjectURL).not.toHaveBeenCalled();
     expect(sendResponse).not.toHaveBeenCalled();
@@ -73,30 +92,74 @@ describe('offscreen document message bridge', () => {
     const listener = await importOffscreenWithListener();
     const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:extension/test');
     const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
-    const sendResponse = vi.fn();
 
-    listener({ target: 'offscreen', kind: 'bytesToUrl', bytes: [1, 2, 3], mimeType: 'image/png' }, { id: 'extension-id' }, sendResponse);
-    listener({ target: 'offscreen', kind: 'bytesToUrl', bytes: new ArrayBuffer(0), mimeType: 42 }, { id: 'extension-id' }, sendResponse);
-    listener({ target: 'offscreen', kind: 'revoke', url: 42 }, { id: 'extension-id' }, sendResponse);
+    expect(send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: '', mimeType: 'image/png', totalBytes: 1 })).toHaveBeenCalledWith({
+      ok: false,
+      error: 'INVALID_OFFSCREEN_MESSAGE',
+    });
+    expect(send(listener, { target: 'offscreen', kind: 'bytesChunk', transferId: 'transfer-1', index: 0, data: 42 })).toHaveBeenCalledWith({
+      ok: false,
+      error: 'INVALID_OFFSCREEN_MESSAGE',
+    });
+    expect(send(listener, { target: 'offscreen', kind: 'bytesChunk', transferId: 'transfer-1', index: 0, data: 'not base64!' })).toHaveBeenCalledWith({
+      ok: false,
+      error: 'INVALID_OFFSCREEN_MESSAGE',
+    });
+    expect(send(listener, { target: 'offscreen', kind: 'revoke', url: 42 })).toHaveBeenCalledWith({
+      ok: false,
+      error: 'INVALID_OFFSCREEN_MESSAGE',
+    });
 
     expect(createObjectURL).not.toHaveBeenCalled();
     expect(revokeObjectURL).not.toHaveBeenCalled();
-    expect(sendResponse).toHaveBeenCalledTimes(3);
-    expect(sendResponse).toHaveBeenNthCalledWith(1, { ok: false, error: 'INVALID_OFFSCREEN_MESSAGE' });
-    expect(sendResponse).toHaveBeenNthCalledWith(2, { ok: false, error: 'INVALID_OFFSCREEN_MESSAGE' });
-    expect(sendResponse).toHaveBeenNthCalledWith(3, { ok: false, error: 'INVALID_OFFSCREEN_MESSAGE' });
   });
 
-  test('responds with an error when object URL creation fails', async () => {
+  test('rejects invalid chunk order and missing transfers', async () => {
+    const listener = await importOffscreenWithListener();
+
+    expect(send(listener, { target: 'offscreen', kind: 'bytesChunk', transferId: 'missing', index: 0, data: base64([1]) })).toHaveBeenCalledWith({
+      ok: false,
+      error: 'UNKNOWN_TRANSFER',
+    });
+    send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: 'transfer-1', mimeType: 'text/plain', totalBytes: 2 });
+    expect(send(listener, { target: 'offscreen', kind: 'bytesChunk', transferId: 'transfer-1', index: 1, data: base64([1]) })).toHaveBeenCalledWith({
+      ok: false,
+      error: 'INVALID_CHUNK_ORDER',
+    });
+    expect(send(listener, { target: 'offscreen', kind: 'bytesEnd', transferId: 'transfer-1' })).toHaveBeenCalledWith({
+      ok: false,
+      error: 'TRANSFER_SIZE_MISMATCH',
+    });
+  });
+
+  test('aborts transfer state', async () => {
+    const listener = await importOffscreenWithListener();
+
+    expect(send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: 'transfer-1', mimeType: 'text/plain', totalBytes: 1 })).toHaveBeenCalledWith({
+      ok: true,
+      value: null,
+    });
+    expect(send(listener, { target: 'offscreen', kind: 'bytesAbort', transferId: 'transfer-1' })).toHaveBeenCalledWith({ ok: true, value: null });
+    expect(send(listener, { target: 'offscreen', kind: 'bytesEnd', transferId: 'transfer-1' })).toHaveBeenCalledWith({
+      ok: false,
+      error: 'UNKNOWN_TRANSFER',
+    });
+  });
+
+  test('responds with an error when object URL creation fails and clears transfer state', async () => {
     const listener = await importOffscreenWithListener();
     vi.spyOn(URL, 'createObjectURL').mockImplementation(() => {
       throw new Error('create failed');
     });
-    const sendResponse = vi.fn();
 
-    listener({ target: 'offscreen', kind: 'bytesToUrl', bytes: new ArrayBuffer(0), mimeType: 'text/plain' }, { id: 'extension-id' }, sendResponse);
+    send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: 'transfer-1', mimeType: 'text/plain', totalBytes: 1 });
+    send(listener, { target: 'offscreen', kind: 'bytesChunk', transferId: 'transfer-1', index: 0, data: base64([1]) });
 
-    expect(sendResponse).toHaveBeenCalledWith({ ok: false, error: 'create failed' });
+    expect(send(listener, { target: 'offscreen', kind: 'bytesEnd', transferId: 'transfer-1' })).toHaveBeenCalledWith({ ok: false, error: 'create failed' });
+    expect(send(listener, { target: 'offscreen', kind: 'bytesEnd', transferId: 'transfer-1' })).toHaveBeenCalledWith({
+      ok: false,
+      error: 'UNKNOWN_TRANSFER',
+    });
   });
 
   test('responds with an error when object URL revocation fails', async () => {
@@ -104,10 +167,9 @@ describe('offscreen document message bridge', () => {
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {
       throw new Error('revoke failed');
     });
-    const sendResponse = vi.fn();
 
-    listener({ target: 'offscreen', kind: 'revoke', url: 'blob:extension/test' }, { id: 'extension-id' }, sendResponse);
-
-    expect(sendResponse).toHaveBeenCalledWith({ ok: false, error: 'revoke failed' });
+    expect(send(listener, { target: 'offscreen', kind: 'revoke', url: 'blob:extension/test' })).toHaveBeenCalledWith({ ok: false, error: 'revoke failed' });
   });
 });
+
+export {};
