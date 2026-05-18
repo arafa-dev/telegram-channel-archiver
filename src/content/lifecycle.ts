@@ -1,21 +1,23 @@
 type ChangeCallback = () => void;
+type PeerIdSource = () => number | null | Promise<number | null>;
 
 export class LifecycleWatcher {
   private currentUrl = location.href;
   private lastPeerId: number | null = null;
   private readonly callbacks = new Set<ChangeCallback>();
   private readonly intervalIds: number[] = [];
-  private getCurrentPeerId: (() => number | null) | null = null;
+  private getCurrentPeerId: PeerIdSource | null = null;
+  private peerCheckInFlight = false;
   private readonly beforeUnload = () => this.fire();
 
-  start(getCurrentPeerId: () => number | null): void {
+  async start(getCurrentPeerId: PeerIdSource): Promise<void> {
     this.stop();
     this.getCurrentPeerId = getCurrentPeerId;
     this.currentUrl = location.href;
-    this.lastPeerId = getCurrentPeerId();
+    this.lastPeerId = await getCurrentPeerId();
 
     this.intervalIds.push(window.setInterval(() => this.checkUrl(), 500));
-    this.intervalIds.push(window.setInterval(() => this.checkPeer(), 1000));
+    this.intervalIds.push(window.setInterval(() => void this.checkPeer(), 1000));
     window.addEventListener('beforeunload', this.beforeUnload);
   }
 
@@ -39,12 +41,17 @@ export class LifecycleWatcher {
     this.fire();
   }
 
-  private checkPeer(): void {
-    if (!this.getCurrentPeerId) return;
-    const peerId = this.getCurrentPeerId();
-    if (peerId === this.lastPeerId) return;
-    this.lastPeerId = peerId;
-    this.fire();
+  private async checkPeer(): Promise<void> {
+    if (!this.getCurrentPeerId || this.peerCheckInFlight) return;
+    this.peerCheckInFlight = true;
+    try {
+      const peerId = await this.getCurrentPeerId();
+      if (peerId === this.lastPeerId) return;
+      this.lastPeerId = peerId;
+      this.fire();
+    } finally {
+      this.peerCheckInFlight = false;
+    }
   }
 
   private fire(): void {

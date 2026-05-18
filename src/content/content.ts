@@ -5,6 +5,7 @@ import type { ArchiveFailure, ArchiveItem, Counts, MediaRef, MessageMeta, PeerIn
 import { BridgeClient } from './bridge-client';
 import { LifecycleWatcher } from './lifecycle';
 import { DownloadPool } from './pool';
+import { planPageProgress } from './progress';
 import { callSw, openKeepalivePort } from './sw-client';
 import { Panel, type PanelView } from './ui/panel';
 import { walkPage, type WalkItem } from './walker';
@@ -60,7 +61,10 @@ async function boot(): Promise<void> {
     const peerId = activePeerId;
     void handlePeerChange(peerId);
   });
-  watcher.start(() => currentPeer?.peerId ?? null);
+  void watcher.start(async () => {
+    const peer = await bridge.call<PeerInfo | null>('getCurrentPeer').catch(() => currentPeer);
+    return peer?.peerId ?? null;
+  });
 }
 
 async function refreshPeer(): Promise<PeerInfo | null> {
@@ -115,28 +119,34 @@ async function onStart(): Promise<void> {
 
       const page = await walkPage(bridge, peer.peerId, offsetId, PAGE_LIMIT);
       const fresh = page.items.filter((item) => !seenIds.has(item.meta.messageId));
-      const downloadableIds = page.items.map((item) => item.meta.messageId);
-      const allSeenIds = [...page.skippedIds, ...downloadableIds];
 
-      for (const id of allSeenIds) seenIds.add(id);
       if (fresh.length > 0) setView({ found: view.found + fresh.length, status: 'downloading' });
 
+      const acceptedFreshIds: number[] = [];
       for (const item of fresh) {
         await waitIfPaused();
         if (cancelled || activePeerId !== peer.peerId) break;
         enqueueDownload(peer.peerId, item);
+        acceptedFreshIds.push(item.meta.messageId);
       }
 
+      const interrupted = cancelled || activePeerId !== peer.peerId || acceptedFreshIds.length < fresh.length;
+      if (!interrupted) await pool.drain();
+
+      const progress = planPageProgress({
+        page,
+        seenIds,
+        currentOffsetId: offsetId,
+        interrupted,
+      });
       await callSw({
         kind: 'recordSeen',
         peerId: peer.peerId,
-        messageIds: allSeenIds,
-        skippedIds: page.skippedIds,
-        cursor: { offsetId: page.nextOffsetId },
+        ...progress.recordSeen,
       });
 
-      if (page.nextOffsetId === 0) break;
-      offsetId = page.nextOffsetId;
+      if (interrupted || progress.newOffsetId === 0) break;
+      offsetId = progress.newOffsetId;
       if (fresh.length === 0) setView({ status: 'walking' });
     }
 
