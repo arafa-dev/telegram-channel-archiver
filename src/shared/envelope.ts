@@ -62,6 +62,7 @@ export function parseEnvelope(m: unknown): AnyEnvelope | null {
   if (env.kind === 'res') {
     if (typeof env.id !== 'number' || !Number.isFinite(env.id)) return null;
     if (typeof env.ok !== 'boolean') return null;
+    if (env.error !== undefined && typeof env.error !== 'string') return null;
     return env as unknown as ResEnvelope;
   }
 

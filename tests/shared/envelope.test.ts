@@ -68,6 +68,7 @@ describe('parseEnvelope', () => {
     expect(parseEnvelope({ source: 'tg-archive', kind: 'res', id: '1', ok: true })).toBeNull();
     expect(parseEnvelope({ source: 'tg-archive', kind: 'res', id: 1, ok: 'true' })).toBeNull();
     expect(parseEnvelope({ source: 'tg-archive', kind: 'res', id: Number.POSITIVE_INFINITY, ok: true })).toBeNull();
+    expect(parseEnvelope({ source: 'tg-archive', kind: 'res', id: 1, ok: false, error: 30 })).toBeNull();
   });
 
   it('returns null for malformed event envelopes', () => {

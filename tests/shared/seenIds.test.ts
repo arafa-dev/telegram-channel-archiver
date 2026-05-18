@@ -36,6 +36,15 @@ describe('seenIds codec', () => {
     expect(() => unpackSeenIds('AA')).toThrow(/Corrupt seen ids/);
   });
 
+  it('rejects packed strings with invalid base64url characters', () => {
+    expect(() => unpackSeenIds('!!!!')).toThrow(/Corrupt seen ids/);
+    expect(() => unpackSeenIds('@@@@')).toThrow(/Corrupt seen ids/);
+  });
+
+  it('rejects packed strings with impossible base64url length', () => {
+    expect(() => unpackSeenIds('A')).toThrow(/Corrupt seen ids/);
+  });
+
   it('covers the browser binary-string base64url fallback path', () => {
     const bytes = __seenIdsInternals.idsToBytes(new Set([1, 0x12345678]));
     const packed = __seenIdsInternals.base64UrlEncodeBinaryString(bytes);
@@ -52,6 +61,16 @@ describe('seenIds codec', () => {
     expect(ids.size).toBe(1);
     addSeenId(ids, 2);
     expect(ids.size).toBe(2);
+  });
+
+  it('addSeenId rejects invalid ids without mutating', () => {
+    const ids = new Set([1]);
+
+    expect(() => addSeenId(ids, -1)).toThrow(/Invalid seen id/);
+    expect(ids).toEqual(new Set([1]));
+
+    expect(() => addSeenId(ids, 1.2)).toThrow(/Invalid seen id/);
+    expect(ids).toEqual(new Set([1]));
   });
 
   it('hasSeenId works on a Set', () => {

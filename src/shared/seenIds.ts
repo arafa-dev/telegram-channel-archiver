@@ -2,6 +2,12 @@ function hasBuffer(): boolean {
   return typeof Buffer !== 'undefined';
 }
 
+function assertValidPackedSeenIds(packed: string): void {
+  if (!/^[A-Za-z0-9_-]*$/.test(packed) || packed.length % 4 === 1) {
+    throw new Error('Corrupt seen ids: invalid base64url data');
+  }
+}
+
 function base64UrlEncodeBinaryString(bytes: Uint8Array): string {
   if (typeof btoa !== 'function') {
     throw new Error('No base64 encoder available');
@@ -34,6 +40,8 @@ function base64UrlEncode(bytes: Uint8Array): string {
 }
 
 function base64UrlDecode(s: string): Uint8Array {
+  assertValidPackedSeenIds(s);
+
   if (hasBuffer()) {
     return new Uint8Array(Buffer.from(s, 'base64url'));
   }
@@ -85,6 +93,7 @@ export function unpackSeenIds(packed: string): Set<number> {
 }
 
 export function addSeenId(ids: Set<number>, id: number): void {
+  assertValidSeenId(id);
   ids.add(id);
 }
 
