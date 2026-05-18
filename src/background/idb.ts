@@ -21,17 +21,27 @@ function tx<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBReque
         const t = db.transaction(STORE, mode);
         const s = t.objectStore(STORE);
         const r = fn(s);
-        r.onsuccess = () => resolve(r.result);
-        r.onerror = () => reject(r.error);
-        t.oncomplete = () => db.close();
-        t.onabort = () => {
+
+        let result: T | undefined;
+        let settled = false;
+        const fail = () => {
+          if (settled) return;
+          settled = true;
           db.close();
-          reject(t.error);
+          reject(t.error ?? r.error ?? new Error('IndexedDB transaction failed'));
         };
-        t.onerror = () => {
+
+        r.onsuccess = () => {
+          result = r.result;
+        };
+        t.oncomplete = () => {
+          if (settled) return;
+          settled = true;
           db.close();
-          reject(t.error);
+          resolve(result as T);
         };
+        t.onerror = fail;
+        t.onabort = fail;
       })
   );
 }
