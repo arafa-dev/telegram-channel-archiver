@@ -35,4 +35,35 @@ describe('content progress policy', () => {
       hadFailures: true,
     })).toEqual({ complete: false, reason: 'failure' });
   });
+
+  test('classifies an unmoved zero cursor as tail completion', async () => {
+    const { classifyPageStop } = await import('../../src/content/progress-policy');
+
+    expect(classifyPageStop({
+      runActive: true,
+      advancedCursor: false,
+      nextOffsetId: 0,
+      sawSeenDownloadable: false,
+      hadFailures: false,
+    })).toEqual({ complete: true, reason: 'tail' });
+  });
+
+  test('failure and interruption override zero-offset tail completion', async () => {
+    const { classifyPageStop } = await import('../../src/content/progress-policy');
+
+    expect(classifyPageStop({
+      runActive: true,
+      advancedCursor: false,
+      nextOffsetId: 0,
+      sawSeenDownloadable: false,
+      hadFailures: true,
+    })).toEqual({ complete: false, reason: 'failure' });
+    expect(classifyPageStop({
+      runActive: false,
+      advancedCursor: false,
+      nextOffsetId: 0,
+      sawSeenDownloadable: false,
+      hadFailures: false,
+    })).toEqual({ complete: false, reason: 'interrupted' });
+  });
 });
