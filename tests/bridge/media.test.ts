@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractMediaRef, extractMessage, resolveMediaToken } from '../../src/bridge/media';
+import { extractMediaRef, extractMessage, releaseMediaToken, resolveMediaToken } from '../../src/bridge/media';
 
 describe('extractMessage', () => {
   it('normalizes message metadata and media reference', () => {
@@ -31,6 +31,16 @@ describe('extractMessage', () => {
       },
     });
     expect(resolveMediaToken(normalized.mediaRef?.rawMediaToken)).toBe(media);
+  });
+
+  it('deletes released media tokens and resolves released tokens with a clear error', () => {
+    const media = { _: 'messageMediaPhoto', photo: { sizes: [] } };
+    const token = extractMediaRef(media)?.rawMediaToken;
+
+    expect(resolveMediaToken(token)).toBe(media);
+    expect(releaseMediaToken(token)).toBe(true);
+    expect(() => resolveMediaToken(token)).toThrow('UNKNOWN_MEDIA_TOKEN');
+    expect(releaseMediaToken(token)).toBe(false);
   });
 
   it('throws MALFORMED_MESSAGE for non-object or invalid message identity fields', () => {

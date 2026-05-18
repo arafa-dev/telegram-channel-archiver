@@ -20,6 +20,10 @@ export function resolveMediaToken(token: unknown): any {
   return mediaRegistry.get(token);
 }
 
+export function releaseMediaToken(token: unknown): boolean {
+  return typeof token === 'string' && mediaRegistry.delete(token);
+}
+
 export function extractMessage(msg: any): MessageNormalized {
   if (!isRecord(msg) || !Number.isFinite(msg.id) || !Number.isFinite(msg.date)) {
     throw new Error('MALFORMED_MESSAGE');

@@ -22,6 +22,15 @@ describe('getHistory', () => {
     expect(getHistoryMock).toHaveBeenCalledWith({ peerId: 7, offsetId: 0, limit: 2 });
   });
 
+  it('accepts direct message pages without getMessageByPeer capability', async () => {
+    await expect(
+      getHistory(handles({ getHistory: vi.fn().mockResolvedValue({ messages: [{ id: 1 }] }) }), 7, 0, 10)
+    ).resolves.toEqual({
+      messages: [{ id: 1 }],
+      nextOffsetId: 0,
+    });
+  });
+
   it('resolves id-based history with getMessageByPeer', async () => {
     const appMessagesManager = {
       getHistory: vi.fn().mockResolvedValue({ history: [4, 3] }),
@@ -42,5 +51,11 @@ describe('getHistory', () => {
     await expect(
       getHistory(handles({ getHistory: vi.fn().mockResolvedValue({ ids: [1] }) }), 1, 0, 10)
     ).rejects.toThrow('UNEXPECTED_HISTORY_SHAPE');
+  });
+
+  it('throws targeted compatibility error when id-based history requires missing getMessageByPeer', async () => {
+    await expect(
+      getHistory(handles({ getHistory: vi.fn().mockResolvedValue({ history: [1] }) }), 1, 0, 10)
+    ).rejects.toThrow('BRIDGE_INCOMPATIBLE: missing appMessagesManager.getMessageByPeer');
   });
 });

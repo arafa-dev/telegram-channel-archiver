@@ -27,9 +27,6 @@ export function resolveTelegramHandles(w: any = window): TelegramHandles {
   const missing: string[] = [...REQUIRED.filter((key) => !found[key])];
   if (found.appMessagesManager) {
     if (typeof found.appMessagesManager.getHistory !== 'function') missing.push('appMessagesManager.getHistory');
-    if (typeof found.appMessagesManager.getMessageByPeer !== 'function') {
-      missing.push('appMessagesManager.getMessageByPeer');
-    }
   }
   if (
     found.appDownloadManager &&

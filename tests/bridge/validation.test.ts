@@ -12,6 +12,8 @@ describe('bridge argument validation', () => {
 
   it('throws INVALID_ARGS for invalid getHistory arguments', () => {
     expect(() => parseGetHistoryArgs({ peerId: Number.NaN, offsetId: 0, limit: 10 })).toThrow('INVALID_ARGS');
+    expect(() => parseGetHistoryArgs({ peerId: 1.5, offsetId: 0, limit: 10 })).toThrow('INVALID_ARGS');
+    expect(() => parseGetHistoryArgs({ peerId: 1, offsetId: 0.5, limit: 10 })).toThrow('INVALID_ARGS');
     expect(() => parseGetHistoryArgs({ peerId: 1, offsetId: -1, limit: 10 })).toThrow('INVALID_ARGS');
     expect(() => parseGetHistoryArgs({ peerId: 1, offsetId: 0, limit: 201 })).toThrow('INVALID_ARGS');
   });
@@ -35,6 +37,9 @@ describe('bridge argument validation', () => {
       'INVALID_ARGS'
     );
     expect(() => parseDownloadMediaArgs({ rawMediaToken: 'media:1', fileName: 'a.jpg', requestId: Infinity })).toThrow(
+      'INVALID_ARGS'
+    );
+    expect(() => parseDownloadMediaArgs({ rawMediaToken: 'media:1', fileName: 'a.jpg', requestId: 1.5 })).toThrow(
       'INVALID_ARGS'
     );
   });

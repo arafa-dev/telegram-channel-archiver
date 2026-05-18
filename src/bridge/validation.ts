@@ -20,7 +20,9 @@ export function parseGetHistoryArgs(args: unknown): GetHistoryArgs {
 
   if (
     !Number.isFinite(peerId) ||
+    !Number.isInteger(peerId) ||
     !Number.isFinite(offsetId) ||
+    !Number.isInteger(offsetId) ||
     offsetId < 0 ||
     !Number.isInteger(limit) ||
     limit < 1 ||
@@ -45,7 +47,8 @@ export function parseDownloadMediaArgs(args: unknown): DownloadMediaArgs {
     typeof rawMediaToken !== 'string' ||
     typeof fileName !== 'string' ||
     fileName.length === 0 ||
-    !Number.isFinite(requestId)
+    !Number.isFinite(requestId) ||
+    !Number.isInteger(requestId)
   ) {
     throwInvalidArgs();
   }

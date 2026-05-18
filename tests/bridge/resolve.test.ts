@@ -4,7 +4,7 @@ import { BridgeIncompatibleError, resolveTelegramHandles, waitForTelegramHandles
 describe('resolveTelegramHandles', () => {
   it('returns required Telegram manager handles and optional rootScope', () => {
     const w = {
-      appMessagesManager: { getHistory: () => undefined, getMessageByPeer: () => undefined },
+      appMessagesManager: { getHistory: () => undefined },
       appDownloadManager: { download: () => undefined },
       appImManager: {},
       appPeersManager: { getPeer: () => undefined },
@@ -35,7 +35,6 @@ describe('resolveTelegramHandles', () => {
       })
     ).toThrow(
       new BridgeIncompatibleError([
-        'appMessagesManager.getMessageByPeer',
         'appDownloadManager.download|downloadToDisc',
         'appPeersManager.getPeer',
       ])
@@ -51,7 +50,7 @@ describe('waitForTelegramHandles', () => {
     const promise = waitForTelegramHandles({ timeoutMs: 1000, intervalMs: 50, w });
     await vi.advanceTimersByTimeAsync(50);
     Object.assign(w, {
-      appMessagesManager: { getHistory: () => undefined, getMessageByPeer: () => undefined },
+      appMessagesManager: { getHistory: () => undefined },
       appDownloadManager: { downloadToDisc: () => undefined },
       appImManager: {},
       appPeersManager: { getPeer: () => undefined },

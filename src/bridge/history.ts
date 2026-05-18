@@ -18,6 +18,9 @@ export async function getHistory(
   if (Array.isArray(result?.messages)) {
     messages = result.messages;
   } else if (Array.isArray(result?.history)) {
+    if (typeof h.appMessagesManager.getMessageByPeer !== 'function') {
+      throw new Error('BRIDGE_INCOMPATIBLE: missing appMessagesManager.getMessageByPeer');
+    }
     messages = await Promise.all(
       result.history.map((mid: number) => h.appMessagesManager.getMessageByPeer(peerId, mid))
     );
