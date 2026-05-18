@@ -68,4 +68,46 @@ describe('offscreen document message bridge', () => {
     expect(createObjectURL).not.toHaveBeenCalled();
     expect(sendResponse).not.toHaveBeenCalled();
   });
+
+  test('rejects malformed offscreen-targeted payloads', async () => {
+    const listener = await importOffscreenWithListener();
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:extension/test');
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const sendResponse = vi.fn();
+
+    listener({ target: 'offscreen', kind: 'bytesToUrl', bytes: [1, 2, 3], mimeType: 'image/png' }, { id: 'extension-id' }, sendResponse);
+    listener({ target: 'offscreen', kind: 'bytesToUrl', bytes: new ArrayBuffer(0), mimeType: 42 }, { id: 'extension-id' }, sendResponse);
+    listener({ target: 'offscreen', kind: 'revoke', url: 42 }, { id: 'extension-id' }, sendResponse);
+
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+    expect(sendResponse).toHaveBeenCalledTimes(3);
+    expect(sendResponse).toHaveBeenNthCalledWith(1, { ok: false, error: 'INVALID_OFFSCREEN_MESSAGE' });
+    expect(sendResponse).toHaveBeenNthCalledWith(2, { ok: false, error: 'INVALID_OFFSCREEN_MESSAGE' });
+    expect(sendResponse).toHaveBeenNthCalledWith(3, { ok: false, error: 'INVALID_OFFSCREEN_MESSAGE' });
+  });
+
+  test('responds with an error when object URL creation fails', async () => {
+    const listener = await importOffscreenWithListener();
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => {
+      throw new Error('create failed');
+    });
+    const sendResponse = vi.fn();
+
+    listener({ target: 'offscreen', kind: 'bytesToUrl', bytes: new ArrayBuffer(0), mimeType: 'text/plain' }, { id: 'extension-id' }, sendResponse);
+
+    expect(sendResponse).toHaveBeenCalledWith({ ok: false, error: 'create failed' });
+  });
+
+  test('responds with an error when object URL revocation fails', async () => {
+    const listener = await importOffscreenWithListener();
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {
+      throw new Error('revoke failed');
+    });
+    const sendResponse = vi.fn();
+
+    listener({ target: 'offscreen', kind: 'revoke', url: 'blob:extension/test' }, { id: 'extension-id' }, sendResponse);
+
+    expect(sendResponse).toHaveBeenCalledWith({ ok: false, error: 'revoke failed' });
+  });
 });
