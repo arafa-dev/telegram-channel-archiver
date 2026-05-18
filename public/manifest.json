@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "Telegram Channel Archiver",
   "version": "0.1.0",
+  "description": "Archive all media from a Telegram Web K channel for personal use.",
   "permissions": [
     "downloads",
     "storage",
