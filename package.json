@@ -1,0 +1,20 @@
+{
+  "name": "telegram-channel-archiver",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:watch": "node scripts/build.mjs --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.268",
+    "@types/node": "^20.12.7",
+    "esbuild": "^0.21.0",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
+  }
+}
