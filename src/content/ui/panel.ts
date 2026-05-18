@@ -47,12 +47,12 @@ export class Panel {
       error.style.display = 'none';
     }
 
-    const running = view.status === 'walking' || view.status === 'downloading';
+    const buttonState = getPanelButtonState(view.status);
     const start = this.field<HTMLButtonElement>('start');
-    start.disabled = running || view.status === 'completed';
-    start.textContent = view.status === 'paused' ? 'Resume' : 'Archive this channel';
-    this.field<HTMLButtonElement>('pause').disabled = !running;
-    this.field<HTMLButtonElement>('cancel').disabled = view.status === 'idle' || view.status === 'completed';
+    start.disabled = buttonState.startDisabled;
+    start.textContent = buttonState.startText;
+    this.field<HTMLButtonElement>('pause').disabled = buttonState.pauseDisabled;
+    this.field<HTMLButtonElement>('cancel').disabled = buttonState.cancelDisabled;
   }
 
   private injectCss(): void {
@@ -106,6 +106,21 @@ export class Panel {
     if (!el) throw new Error(`Missing panel field: ${name}`);
     return el;
   }
+}
+
+export function getPanelButtonState(status: PanelView['status']): {
+  startDisabled: boolean;
+  startText: string;
+  pauseDisabled: boolean;
+  cancelDisabled: boolean;
+} {
+  const running = status === 'walking' || status === 'downloading';
+  return {
+    startDisabled: running,
+    startText: status === 'paused' ? 'Resume' : 'Archive this channel',
+    pauseDisabled: !running,
+    cancelDisabled: status === 'idle' || status === 'completed',
+  };
 }
 
 function formatBps(bps: number): string {
