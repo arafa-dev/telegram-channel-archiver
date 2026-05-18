@@ -91,10 +91,13 @@ export const swHandler: SwHandler = async (req, _sender) => {
       return withPeerQueue(req.peerId, async () => {
         const state = await readArchive(req.peerId);
         if (!state) return { ok: false, error: 'NO_STATE' };
+        const alreadySeen = new Set(state.seenIds);
         for (const id of req.messageIds) {
-          if (state.seenIds.has(id)) continue;
           state.seenIds.add(id);
-          state.counts.skipped += 1;
+        }
+        for (const id of new Set(req.skippedIds ?? [])) {
+          state.seenIds.add(id);
+          if (!alreadySeen.has(id)) state.counts.skipped += 1;
         }
         state.cursor = req.cursor;
         await writeArchive(state);

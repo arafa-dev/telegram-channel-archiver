@@ -129,22 +129,40 @@ describe('service-worker handler', () => {
     expect(JSON.parse(JSON.stringify(response.value))).toEqual(response.value);
   });
 
-  test('recordSeen increments skipped only for newly seen ids', async () => {
+  test('recordSeen adds all message ids but counts skippedIds only', async () => {
     const { swHandler } = await importWorker();
     const state = storage.newArchiveState({ peerId: 42, title: 'News', username: null });
     state.seenIds = new Set([100]);
     storage.states.set(42, state);
 
     const response = await swHandler(
-      { kind: 'recordSeen', peerId: 42, messageIds: [100, 101, 101, 102], cursor: { offsetId: 88 } },
+      { kind: 'recordSeen', peerId: 42, messageIds: [100, 101, 101, 102, 103], skippedIds: [100, 102], cursor: { offsetId: 88 } },
       {}
     );
 
     expect(response).toEqual({ ok: true, value: null });
     expect(storage.states.get(42)).toEqual(expect.objectContaining({
       cursor: { offsetId: 88 },
-      counts: { downloaded: 0, skipped: 2, failed: 0 },
-      seenIds: new Set([100, 101, 102]),
+      counts: { downloaded: 0, skipped: 1, failed: 0 },
+      seenIds: new Set([100, 101, 102, 103]),
+    }));
+  });
+
+  test('recordSeen remains backward compatible by treating messageIds as seen only', async () => {
+    const { swHandler } = await importWorker();
+    const state = storage.newArchiveState({ peerId: 42, title: 'News', username: null });
+    storage.states.set(42, state);
+
+    const response = await swHandler(
+      { kind: 'recordSeen', peerId: 42, messageIds: [201, 202], cursor: { offsetId: 77 } },
+      {}
+    );
+
+    expect(response).toEqual({ ok: true, value: null });
+    expect(storage.states.get(42)).toEqual(expect.objectContaining({
+      cursor: { offsetId: 77 },
+      counts: { downloaded: 0, skipped: 0, failed: 0 },
+      seenIds: new Set([201, 202]),
     }));
   });
 

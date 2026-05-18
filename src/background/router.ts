@@ -1,7 +1,7 @@
 export type SwRequest =
   | { kind: 'init'; peerId: number; title: string; username: string | null }
   | { kind: 'getState'; peerId: number }
-  | { kind: 'recordSeen'; peerId: number; messageIds: number[]; cursor: { offsetId: number } }
+  | { kind: 'recordSeen'; peerId: number; messageIds: number[]; skippedIds?: number[]; cursor: { offsetId: number } }
   | { kind: 'recordItem'; peerId: number; item: import('../shared/types').ArchiveItem; bytes: ArrayBuffer; mimeType: string }
   | { kind: 'recordFailure'; peerId: number; failure: import('../shared/types').ArchiveFailure }
   | { kind: 'flushPersist'; peerId: number }
