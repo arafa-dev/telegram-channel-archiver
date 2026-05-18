@@ -16,6 +16,12 @@ export interface PageProgress {
   newOffsetId: number;
 }
 
+export interface FinalizePageProgressInput extends Omit<PageProgressInput, 'interrupted'> {
+  initiallyInterrupted: boolean;
+  drain: () => Promise<void>;
+  isInterrupted: () => boolean;
+}
+
 export function planPageProgress(input: PageProgressInput): PageProgress {
   const skippedIds = [...input.page.skippedIds];
   for (const id of skippedIds) input.seenIds.add(id);
@@ -30,4 +36,15 @@ export function planPageProgress(input: PageProgressInput): PageProgress {
     },
     newOffsetId: nextOffsetId,
   };
+}
+
+export async function finalizePageProgress(input: FinalizePageProgressInput): Promise<PageProgress> {
+  if (!input.initiallyInterrupted) await input.drain();
+
+  return planPageProgress({
+    page: input.page,
+    seenIds: input.seenIds,
+    currentOffsetId: input.currentOffsetId,
+    interrupted: input.initiallyInterrupted || input.isInterrupted(),
+  });
 }

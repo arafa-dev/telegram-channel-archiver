@@ -5,7 +5,7 @@ import type { ArchiveFailure, ArchiveItem, Counts, MediaRef, MessageMeta, PeerIn
 import { BridgeClient } from './bridge-client';
 import { LifecycleWatcher } from './lifecycle';
 import { DownloadPool } from './pool';
-import { planPageProgress } from './progress';
+import { finalizePageProgress } from './progress';
 import { callSw, openKeepalivePort } from './sw-client';
 import { Panel, type PanelView } from './ui/panel';
 import { walkPage, type WalkItem } from './walker';
@@ -42,6 +42,7 @@ let pool: DownloadPool | null = null;
 let keepalivePort: chrome.runtime.Port | null = null;
 let cancelled = false;
 let paused = false;
+let activeRunId = 0;
 let pauseResolvers: Array<() => void> = [];
 let bytesWindow: Array<{ t: number; bytes: number }> = [];
 
@@ -89,6 +90,8 @@ async function onStart(): Promise<void> {
 
   cancelled = false;
   paused = false;
+  activeRunId += 1;
+  const runId = activeRunId;
   activePeerId = peer.peerId;
   bytesWindow = [];
   setView({
@@ -113,9 +116,9 @@ async function onStart(): Promise<void> {
     let offsetId = state.cursor.offsetId;
     pool = new DownloadPool(CONCURRENCY);
 
-    while (!cancelled && activePeerId === peer.peerId) {
+    while (isRunActive(peer.peerId, runId)) {
       await waitIfPaused();
-      if (cancelled || activePeerId !== peer.peerId) break;
+      if (!isRunActive(peer.peerId, runId)) break;
 
       const page = await walkPage(bridge, peer.peerId, offsetId, PAGE_LIMIT);
       const fresh = page.items.filter((item) => !seenIds.has(item.meta.messageId));
@@ -125,19 +128,18 @@ async function onStart(): Promise<void> {
       const acceptedFreshIds: number[] = [];
       for (const item of fresh) {
         await waitIfPaused();
-        if (cancelled || activePeerId !== peer.peerId) break;
-        enqueueDownload(peer.peerId, item);
+        if (!isRunActive(peer.peerId, runId)) break;
+        enqueueDownload(peer.peerId, runId, item);
         acceptedFreshIds.push(item.meta.messageId);
       }
 
-      const interrupted = cancelled || activePeerId !== peer.peerId || acceptedFreshIds.length < fresh.length;
-      if (!interrupted) await pool.drain();
-
-      const progress = planPageProgress({
+      const progress = await finalizePageProgress({
         page,
         seenIds,
         currentOffsetId: offsetId,
-        interrupted,
+        initiallyInterrupted: !isRunActive(peer.peerId, runId) || acceptedFreshIds.length < fresh.length,
+        drain: () => pool?.drain() ?? Promise.resolve(),
+        isInterrupted: () => !isRunActive(peer.peerId, runId),
       });
       await callSw({
         kind: 'recordSeen',
@@ -145,13 +147,13 @@ async function onStart(): Promise<void> {
         ...progress.recordSeen,
       });
 
-      if (interrupted || progress.newOffsetId === 0) break;
+      if (!isRunActive(peer.peerId, runId) || progress.newOffsetId === offsetId || progress.newOffsetId === 0) break;
       offsetId = progress.newOffsetId;
       if (fresh.length === 0) setView({ status: 'walking' });
     }
 
     await pool.drain();
-    if (!cancelled && activePeerId === peer.peerId) {
+    if (isRunActive(peer.peerId, runId)) {
       await callSw({ kind: 'complete', peerId: peer.peerId });
       setView({ status: 'completed' });
     }
@@ -161,11 +163,11 @@ async function onStart(): Promise<void> {
     keepalivePort?.disconnect();
     keepalivePort = null;
     pool = null;
-    if (activePeerId === peer.peerId) activePeerId = null;
+    if (activePeerId === peer.peerId && activeRunId === runId) activePeerId = null;
   }
 }
 
-function enqueueDownload(peerId: number, item: WalkItem): void {
+function enqueueDownload(peerId: number, runId: number, item: WalkItem): void {
   pool?.enqueue({
     id: item.meta.messageId,
     run: async () => {
@@ -183,28 +185,31 @@ function enqueueDownload(peerId: number, item: WalkItem): void {
       return { blob: result.blob, filename };
     },
     onSuccess: async ({ blob, filename }) => {
-      if (cancelled || activePeerId !== peerId) return;
+      if (!isRunActive(peerId, runId)) return;
       const archiveItem = await buildArchiveItem(item.meta, item.mediaRef, filename, blob);
+      if (!isRunActive(peerId, runId)) return;
+      const bytes = await blob.arrayBuffer();
+      if (!isRunActive(peerId, runId)) return;
       await callSw({
         kind: 'recordItem',
         peerId,
         item: archiveItem,
-        bytes: await blob.arrayBuffer(),
+        bytes,
         mimeType: blob.type || item.mediaRef.mimeType,
       });
-      if (cancelled || activePeerId !== peerId) return;
+      if (!isRunActive(peerId, runId)) return;
       bumpBandwidth(blob.size);
       setView({ downloaded: view.downloaded + 1 });
     },
     onFailure: async (e) => {
-      if (cancelled || activePeerId !== peerId) return;
+      if (!isRunActive(peerId, runId)) return;
       const failure: ArchiveFailure = {
         messageId: item.meta.messageId,
         reason: e.message,
         lastTriedAt: new Date().toISOString(),
       };
       await callSw({ kind: 'recordFailure', peerId, failure });
-      if (!cancelled && activePeerId === peerId) setView({ failed: view.failed + 1 });
+      if (isRunActive(peerId, runId)) setView({ failed: view.failed + 1 });
     },
   });
 }
@@ -245,6 +250,7 @@ function onResume(): void {
 
 async function onCancel(): Promise<void> {
   cancelled = true;
+  activeRunId += 1;
   paused = false;
   pauseResolvers.splice(0).forEach((resolve) => resolve());
   pool?.clearQueue();
@@ -258,6 +264,7 @@ async function onCancel(): Promise<void> {
 
 async function handlePeerChange(peerId: number | null): Promise<void> {
   cancelled = true;
+  activeRunId += 1;
   paused = false;
   pauseResolvers.splice(0).forEach((resolve) => resolve());
   pool?.clearQueue();
@@ -284,6 +291,10 @@ async function waitIfPaused(): Promise<void> {
   while (paused && !cancelled) {
     await new Promise<void>((resolve) => pauseResolvers.push(resolve));
   }
+}
+
+function isRunActive(peerId: number, runId: number): boolean {
+  return !cancelled && activePeerId === peerId && activeRunId === runId;
 }
 
 function errorMessage(e: unknown): string {

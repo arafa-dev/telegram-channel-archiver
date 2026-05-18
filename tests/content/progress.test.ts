@@ -69,4 +69,27 @@ describe('planPageProgress', () => {
     });
     expect(result.newOffsetId).toBe(0);
   });
+
+  test('rechecks interruption after drain before allowing cursor advancement', async () => {
+    const { finalizePageProgress } = await import('../../src/content/progress');
+    let interrupted = false;
+
+    const result = await finalizePageProgress({
+      page: page(),
+      seenIds: new Set([1]),
+      currentOffsetId: 0,
+      initiallyInterrupted: false,
+      drain: async () => {
+        interrupted = true;
+      },
+      isInterrupted: () => interrupted,
+    });
+
+    expect(result.recordSeen).toEqual({
+      messageIds: [4, 5],
+      skippedIds: [4, 5],
+      cursor: { offsetId: 0 },
+    });
+    expect(result.newOffsetId).toBe(0);
+  });
 });
