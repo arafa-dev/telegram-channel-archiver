@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { encodeReq, encodeRes, encodeEvt, isOurMessage, parseEnvelope } from '../../src/shared/envelope';
+import {
+  encodeReq,
+  encodeRes,
+  encodeEvt,
+  isOurMessage,
+  parseEnvelope,
+  type BridgeEvent,
+  type BridgeOp,
+} from '../../src/shared/envelope';
 
 describe('envelope encoding', () => {
   it('encodes a request', () => {
@@ -46,7 +54,39 @@ describe('parseEnvelope', () => {
   });
 
   it('parses a req envelope', () => {
-    const v = parseEnvelope({ source: 'tg-archive', kind: 'req', id: 1, op: 'x' });
+    const v = parseEnvelope({ source: 'tg-archive', kind: 'req', id: 1, op: 'getCurrentPeer' });
     expect(v?.kind).toBe('req');
+  });
+
+  it('returns null for malformed request envelopes', () => {
+    expect(parseEnvelope({ source: 'tg-archive', kind: 'req', id: '1', op: 'getCurrentPeer' })).toBeNull();
+    expect(parseEnvelope({ source: 'tg-archive', kind: 'req', id: 1, op: 'x' })).toBeNull();
+    expect(parseEnvelope({ source: 'tg-archive', kind: 'req', id: Number.NaN, op: 'getCurrentPeer' })).toBeNull();
+  });
+
+  it('returns null for malformed response envelopes', () => {
+    expect(parseEnvelope({ source: 'tg-archive', kind: 'res', id: '1', ok: true })).toBeNull();
+    expect(parseEnvelope({ source: 'tg-archive', kind: 'res', id: 1, ok: 'true' })).toBeNull();
+    expect(parseEnvelope({ source: 'tg-archive', kind: 'res', id: Number.POSITIVE_INFINITY, ok: true })).toBeNull();
+  });
+
+  it('returns null for malformed event envelopes', () => {
+    expect(parseEnvelope({ source: 'tg-archive', kind: 'evt', evt: 'x' })).toBeNull();
+    expect(parseEnvelope({ source: 'tg-archive', kind: 'evt' })).toBeNull();
+  });
+
+  it('parses all valid envelope kinds', () => {
+    const ops: BridgeOp[] = ['getCurrentPeer', 'getHistory', 'extractMediaRef', 'downloadMedia'];
+    const events: BridgeEvent[] = ['downloadProgress', 'bridgeReady'];
+
+    for (const op of ops) {
+      expect(parseEnvelope({ source: 'tg-archive', kind: 'req', id: 1, op })?.kind).toBe('req');
+    }
+
+    expect(parseEnvelope({ source: 'tg-archive', kind: 'res', id: 1, ok: false, error: 'err' })?.kind).toBe('res');
+
+    for (const evt of events) {
+      expect(parseEnvelope({ source: 'tg-archive', kind: 'evt', evt })?.kind).toBe('evt');
+    }
   });
 });

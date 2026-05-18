@@ -30,6 +30,9 @@ export interface EvtEnvelope {
 
 export type AnyEnvelope = ReqEnvelope | ResEnvelope | EvtEnvelope;
 
+const BRIDGE_OPS = new Set<BridgeOp>(['getCurrentPeer', 'getHistory', 'extractMediaRef', 'downloadMedia']);
+const BRIDGE_EVENTS = new Set<BridgeEvent>(['downloadProgress', 'bridgeReady']);
+
 export function encodeReq(id: number, op: BridgeOp, args?: unknown): ReqEnvelope {
   return { source: SOURCE, kind: 'req', id, op, args };
 }
@@ -48,7 +51,24 @@ export function isOurMessage(m: unknown): m is { source: typeof SOURCE } {
 
 export function parseEnvelope(m: unknown): AnyEnvelope | null {
   if (!isOurMessage(m)) return null;
-  const env = m as AnyEnvelope;
-  if (env.kind === 'req' || env.kind === 'res' || env.kind === 'evt') return env;
+  const env = m as Record<string, unknown>;
+
+  if (env.kind === 'req') {
+    if (typeof env.id !== 'number' || !Number.isFinite(env.id)) return null;
+    if (typeof env.op !== 'string' || !BRIDGE_OPS.has(env.op as BridgeOp)) return null;
+    return env as unknown as ReqEnvelope;
+  }
+
+  if (env.kind === 'res') {
+    if (typeof env.id !== 'number' || !Number.isFinite(env.id)) return null;
+    if (typeof env.ok !== 'boolean') return null;
+    return env as unknown as ResEnvelope;
+  }
+
+  if (env.kind === 'evt') {
+    if (typeof env.evt !== 'string' || !BRIDGE_EVENTS.has(env.evt as BridgeEvent)) return null;
+    return env as unknown as EvtEnvelope;
+  }
+
   return null;
 }

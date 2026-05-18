@@ -88,6 +88,54 @@ describe('pickVideoVariant', () => {
     ];
     expect(pickVideoVariant(variants)?.width).toBe(1920);
   });
+
+  it('ignores streaming variants with invalid dimensions', () => {
+    const variants = [
+      {
+        width: 0,
+        height: 1080,
+        durationSec: 60,
+        byteSize: 50_000_000,
+        mimeType: 'video/mp4',
+        isStreaming: true,
+        isDocumentAttachment: false,
+      },
+      {
+        width: 640,
+        height: 480,
+        durationSec: 60,
+        byteSize: 5_000_000,
+        mimeType: 'video/mp4',
+        isStreaming: true,
+        isDocumentAttachment: false,
+      },
+    ];
+    expect(pickVideoVariant(variants)?.width).toBe(640);
+  });
+
+  it('returns null when streaming variants only have invalid dimensions', () => {
+    const variants = [
+      {
+        width: 0,
+        height: 1080,
+        durationSec: 60,
+        byteSize: 50_000_000,
+        mimeType: 'video/mp4',
+        isStreaming: true,
+        isDocumentAttachment: false,
+      },
+      {
+        width: 640,
+        height: -1,
+        durationSec: 60,
+        byteSize: 5_000_000,
+        mimeType: 'video/mp4',
+        isStreaming: true,
+        isDocumentAttachment: false,
+      },
+    ];
+    expect(pickVideoVariant(variants)).toBeNull();
+  });
 });
 
 describe('isMediaDownloadable', () => {

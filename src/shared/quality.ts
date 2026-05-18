@@ -7,7 +7,9 @@ export function pickPhotoSize(sizes: PhotoSize[]): PhotoSize | null {
 }
 
 export function pickVideoVariant(variants: VideoVariant[]): VideoVariant | null {
-  const streaming = variants.filter((variant) => variant.isStreaming && !variant.isDocumentAttachment);
+  const streaming = variants.filter(
+    (variant) => variant.isStreaming && !variant.isDocumentAttachment && variant.width > 0 && variant.height > 0
+  );
   if (streaming.length === 0) return null;
   return streaming.reduce((a, b) => (a.width * a.height >= b.width * b.height ? a : b));
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { packSeenIds, unpackSeenIds, addSeenId, hasSeenId } from '../../src/shared/seenIds';
+import { packSeenIds, unpackSeenIds, addSeenId, hasSeenId, __seenIdsInternals } from '../../src/shared/seenIds';
 
 describe('seenIds codec', () => {
   it('round-trips an empty set', () => {
@@ -18,6 +18,32 @@ describe('seenIds codec', () => {
     expect(packed).not.toContain('=');
     expect(packed).not.toContain('+');
     expect(packed).not.toContain('/');
+  });
+
+  it('uses explicit little-endian uint32 wire format', () => {
+    expect(packSeenIds(new Set([1]))).toBe('AQAAAA');
+    expect(packSeenIds(new Set([0x12345678]))).toBe('eFY0Eg');
+  });
+
+  it('rejects invalid ids before packing', () => {
+    expect(() => packSeenIds(new Set([-1]))).toThrow(/Invalid seen id/);
+    expect(() => packSeenIds(new Set([1.5]))).toThrow(/Invalid seen id/);
+    expect(() => packSeenIds(new Set([Number.NaN]))).toThrow(/Invalid seen id/);
+    expect(() => packSeenIds(new Set([0x1_0000_0000]))).toThrow(/Invalid seen id/);
+  });
+
+  it('rejects corrupt packed data whose decoded byte length is not divisible by 4', () => {
+    expect(() => unpackSeenIds('AA')).toThrow(/Corrupt seen ids/);
+  });
+
+  it('covers the browser binary-string base64url fallback path', () => {
+    const bytes = __seenIdsInternals.idsToBytes(new Set([1, 0x12345678]));
+    const packed = __seenIdsInternals.base64UrlEncodeBinaryString(bytes);
+
+    expect(packed).toBe('AQAAAHhWNBI');
+    expect(__seenIdsInternals.bytesToIds(__seenIdsInternals.base64UrlDecodeBinaryString(packed))).toEqual(
+      new Set([1, 0x12345678])
+    );
   });
 
   it('addSeenId is idempotent', () => {
