@@ -21,7 +21,7 @@ const copyTargets = [
   ["src/offscreen/offscreen.html", "offscreen/offscreen.html"],
   ["src/popup/popup.html", "popup/popup.html"],
   ["src/popup/popup.css", "popup/popup.css"],
-  ["src/content/ui/panel.css", "content/ui/panel.css"]
+  ["src/content/ui/panel.css", "content/panel.css"]
 ];
 
 async function copyStaticAssets() {

@@ -31,5 +31,10 @@
       "world": "ISOLATED"
     }
   ],
-  "web_accessible_resources": []
+  "web_accessible_resources": [
+    {
+      "resources": ["content/panel.css"],
+      "matches": ["https://web.telegram.org/*"]
+    }
+  ]
 }
