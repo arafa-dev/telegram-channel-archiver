@@ -6,6 +6,7 @@ import { BridgeClient } from './bridge-client';
 import { LifecycleWatcher } from './lifecycle';
 import { DownloadPool } from './pool';
 import { finalizePageProgress } from './progress';
+import { clearRunGlobalsIfCurrent } from './run-resources';
 import { callSw, openKeepalivePort } from './sw-client';
 import { Panel, type PanelView } from './ui/panel';
 import { walkPage, type WalkItem } from './walker';
@@ -105,7 +106,10 @@ async function onStart(): Promise<void> {
     error: undefined,
   });
 
-  keepalivePort = openKeepalivePort();
+  const runKeepalivePort = openKeepalivePort();
+  const runPool = new DownloadPool(CONCURRENCY);
+  keepalivePort = runKeepalivePort;
+  pool = runPool;
 
   try {
     await callSw<ArchiveStateDto>({ kind: 'init', peerId: peer.peerId, title: peer.title, username: peer.username });
@@ -114,7 +118,6 @@ async function onStart(): Promise<void> {
 
     const seenIds = unpackSeenIds(state.seenIdsPacked);
     let offsetId = state.cursor.offsetId;
-    pool = new DownloadPool(CONCURRENCY);
 
     while (isRunActive(peer.peerId, runId)) {
       await waitIfPaused();
@@ -129,7 +132,7 @@ async function onStart(): Promise<void> {
       for (const item of fresh) {
         await waitIfPaused();
         if (!isRunActive(peer.peerId, runId)) break;
-        enqueueDownload(peer.peerId, runId, item);
+        enqueueDownload(runPool, peer.peerId, runId, item);
         acceptedFreshIds.push(item.meta.messageId);
       }
 
@@ -138,7 +141,7 @@ async function onStart(): Promise<void> {
         seenIds,
         currentOffsetId: offsetId,
         initiallyInterrupted: !isRunActive(peer.peerId, runId) || acceptedFreshIds.length < fresh.length,
-        drain: () => pool?.drain() ?? Promise.resolve(),
+        drain: () => runPool.drain(),
         isInterrupted: () => !isRunActive(peer.peerId, runId),
       });
       await callSw({
@@ -152,23 +155,27 @@ async function onStart(): Promise<void> {
       if (fresh.length === 0) setView({ status: 'walking' });
     }
 
-    await pool.drain();
+    await runPool.drain();
     if (isRunActive(peer.peerId, runId)) {
       await callSw({ kind: 'complete', peerId: peer.peerId });
       setView({ status: 'completed' });
     }
   } catch (e: unknown) {
-    if (!cancelled) setView({ status: 'error', error: errorMessage(e) });
+    if (isRunActive(peer.peerId, runId)) setView({ status: 'error', error: errorMessage(e) });
   } finally {
-    keepalivePort?.disconnect();
-    keepalivePort = null;
-    pool = null;
+    disconnectPort(runKeepalivePort);
+    const nextGlobals = clearRunGlobalsIfCurrent(
+      { activeRunId, pool, keepalivePort },
+      { runId, pool: runPool, keepalivePort: runKeepalivePort }
+    );
+    pool = nextGlobals.pool;
+    keepalivePort = nextGlobals.keepalivePort;
     if (activePeerId === peer.peerId && activeRunId === runId) activePeerId = null;
   }
 }
 
-function enqueueDownload(peerId: number, runId: number, item: WalkItem): void {
-  pool?.enqueue({
+function enqueueDownload(runPool: DownloadPool, peerId: number, runId: number, item: WalkItem): void {
+  runPool.enqueue({
     id: item.meta.messageId,
     run: async () => {
       const filename = mediaFilename({
@@ -256,7 +263,7 @@ async function onCancel(): Promise<void> {
   pool?.clearQueue();
   const peerId = activePeerId ?? currentPeer?.peerId;
   if (peerId !== undefined && peerId !== null) await callSw({ kind: 'flushPersist', peerId }).catch(() => undefined);
-  keepalivePort?.disconnect();
+  if (keepalivePort) disconnectPort(keepalivePort);
   keepalivePort = null;
   activePeerId = null;
   setView({ status: 'idle' });
@@ -295,6 +302,14 @@ async function waitIfPaused(): Promise<void> {
 
 function isRunActive(peerId: number, runId: number): boolean {
   return !cancelled && activePeerId === peerId && activeRunId === runId;
+}
+
+function disconnectPort(port: chrome.runtime.Port): void {
+  try {
+    port.disconnect();
+  } catch {
+    // A port may already be disconnected by a cancel path.
+  }
 }
 
 function errorMessage(e: unknown): string {
