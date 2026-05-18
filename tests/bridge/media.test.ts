@@ -1,18 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { extractMediaRef, extractMessage } from '../../src/bridge/media';
+import { extractMediaRef, extractMessage, resolveMediaToken } from '../../src/bridge/media';
 
 describe('extractMessage', () => {
   it('normalizes message metadata and media reference', () => {
-    expect(
-      extractMessage({
+    const media = { _: 'messageMediaPhoto', photo: { sizes: [] } };
+    const normalized = extractMessage({
         id: 42,
         grouped_id: '1001',
         date: 1_700_000_000,
         from_id: { user_id: 9 },
         message: 'caption',
-        media: { _: 'messageMediaPhoto', photo: { sizes: [] } },
-      })
-    ).toEqual({
+        media,
+      });
+
+    expect(normalized).toEqual({
       meta: {
         messageId: 42,
         albumGroupedId: 1001,
@@ -26,9 +27,16 @@ describe('extractMessage', () => {
         mimeType: 'image/jpeg',
         fileName: null,
         photoSizes: [],
-        rawMediaToken: { _: 'messageMediaPhoto', photo: { sizes: [] } },
+        rawMediaToken: expect.any(String),
       },
     });
+    expect(resolveMediaToken(normalized.mediaRef?.rawMediaToken)).toBe(media);
+  });
+
+  it('throws MALFORMED_MESSAGE for non-object or invalid message identity fields', () => {
+    expect(() => extractMessage(null)).toThrow('MALFORMED_MESSAGE');
+    expect(() => extractMessage({ id: Number.NaN, date: 1 })).toThrow('MALFORMED_MESSAGE');
+    expect(() => extractMessage({ id: 1, date: Number.POSITIVE_INFINITY })).toThrow('MALFORMED_MESSAGE');
   });
 });
 
@@ -64,7 +72,9 @@ describe('extractMediaRef', () => {
       },
     };
 
-    expect(extractMediaRef(media)).toEqual({
+    const extracted = extractMediaRef(media);
+
+    expect(extracted).toEqual({
       kind: 'video',
       mimeType: 'image/gif',
       fileName: 'clip.gif',
@@ -79,8 +89,9 @@ describe('extractMediaRef', () => {
           isDocumentAttachment: false,
         },
       ],
-      rawMediaToken: media,
+      rawMediaToken: expect.any(String),
     });
+    expect(resolveMediaToken(extracted?.rawMediaToken)).toBe(media);
   });
 
   it('skips non-media documents', () => {
@@ -88,6 +99,17 @@ describe('extractMediaRef', () => {
       extractMediaRef({
         _: 'messageMediaDocument',
         document: { mime_type: 'application/pdf', attributes: [{ _: 'documentAttributeFilename' }] },
+      })
+    ).toBeNull();
+  });
+
+  it('returns null for malformed media and malformed nested size or attribute lists', () => {
+    expect(extractMediaRef('not media')).toBeNull();
+    expect(extractMediaRef({ _: 'messageMediaPhoto', photo: { sizes: 'bad' } })?.photoSizes).toEqual([]);
+    expect(
+      extractMediaRef({
+        _: 'messageMediaDocument',
+        document: { mime_type: 'video/mp4', attributes: 'bad' },
       })
     ).toBeNull();
   });

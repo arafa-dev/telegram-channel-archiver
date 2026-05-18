@@ -1,9 +1,10 @@
 import { encodeEvt, encodeRes, parseEnvelope, type ReqEnvelope } from '../shared/envelope';
 import { downloadMedia } from './download';
 import { getHistory } from './history';
-import { extractMessage } from './media';
+import { extractMessage, resolveMediaToken } from './media';
 import { getCurrentPeer } from './peer';
 import { BridgeIncompatibleError, waitForTelegramHandles } from './resolve';
+import { parseDownloadMediaArgs, parseExtractMediaRefArgs, parseGetHistoryArgs } from './validation';
 
 const log = (...args: unknown[]) => console.log('[tg-archive/bridge]', ...args);
 
@@ -34,7 +35,7 @@ async function main(): Promise<void> {
         return getCurrentPeer(handles);
 
       case 'getHistory': {
-        const args = req.args as { peerId: number; offsetId: number; limit: number };
+        const args = parseGetHistoryArgs(req.args);
         const page = await getHistory(handles, args.peerId, args.offsetId, args.limit);
         return {
           messages: page.messages.map((m) => extractMessage(m)),
@@ -43,13 +44,14 @@ async function main(): Promise<void> {
       }
 
       case 'extractMediaRef': {
-        const args = req.args as { message: any };
+        const args = parseExtractMediaRefArgs(req.args);
         return extractMessage(args.message);
       }
 
       case 'downloadMedia': {
-        const args = req.args as { rawMediaToken: any; fileName: string; requestId: number };
-        const blob = await downloadMedia(handles, args.rawMediaToken, args.fileName, (loaded, total) => {
+        const args = parseDownloadMediaArgs(req.args);
+        const rawMedia = resolveMediaToken(args.rawMediaToken);
+        const blob = await downloadMedia(handles, rawMedia, args.fileName, (loaded, total) => {
           window.postMessage(encodeEvt('downloadProgress', { requestId: args.requestId, loaded, total }), '*');
         });
         return { blob };

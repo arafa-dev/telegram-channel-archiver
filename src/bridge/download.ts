@@ -24,7 +24,18 @@ export async function downloadMedia(
     }
   }
 
-  return downloadToDiscBlob(adm, rawMedia, fileName);
+  return enqueueFallbackDownload(() => downloadToDiscBlob(adm, rawMedia, fileName));
+}
+
+let fallbackQueue: Promise<void> = Promise.resolve();
+
+function enqueueFallbackDownload<T>(task: () => Promise<T>): Promise<T> {
+  const run = fallbackQueue.then(task, task);
+  fallbackQueue = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
 }
 
 function attachProgress(result: any, onProgress?: DownloadProgressCallback): void {

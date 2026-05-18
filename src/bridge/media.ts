@@ -5,14 +5,33 @@ export interface MessageNormalized {
   mediaRef: MediaRef | null;
 }
 
+const mediaRegistry = new Map<string, any>();
+let nextMediaToken = 1;
+
+export function registerMediaToken(media: any): string {
+  const token = `media:${nextMediaToken}`;
+  nextMediaToken += 1;
+  mediaRegistry.set(token, media);
+  return token;
+}
+
+export function resolveMediaToken(token: unknown): any {
+  if (typeof token !== 'string' || !mediaRegistry.has(token)) throw new Error('UNKNOWN_MEDIA_TOKEN');
+  return mediaRegistry.get(token);
+}
+
 export function extractMessage(msg: any): MessageNormalized {
+  if (!isRecord(msg) || !Number.isFinite(msg.id) || !Number.isFinite(msg.date)) {
+    throw new Error('MALFORMED_MESSAGE');
+  }
+
   const meta: MessageMeta = {
     messageId: msg.id,
-    albumGroupedId: msg.grouped_id ? Number(msg.grouped_id) : null,
+    albumGroupedId: toFiniteNumberOrNull(msg.grouped_id),
     dateUtc: new Date(msg.date * 1000).toISOString(),
-    fromId: msg.fromId ?? msg.from_id?.user_id ?? null,
+    fromId: toFiniteNumberOrNull(msg.fromId ?? (isRecord(msg.from_id) ? msg.from_id.user_id : null)),
     fromName: null,
-    caption: msg.message ?? '',
+    caption: typeof msg.message === 'string' ? msg.message : '',
   };
 
   return {
@@ -22,33 +41,33 @@ export function extractMessage(msg: any): MessageNormalized {
 }
 
 export function extractMediaRef(media: any): MediaRef | null {
-  if (!media) return null;
+  if (!isRecord(media)) return null;
 
-  if (media._ === 'messageMediaPhoto' && media.photo) {
+  if (media._ === 'messageMediaPhoto' && isRecord(media.photo)) {
     return {
       kind: 'photo',
       mimeType: 'image/jpeg',
       fileName: null,
-      photoSizes: extractPhotoSizes(media.photo.sizes ?? []),
-      rawMediaToken: media,
+      photoSizes: extractPhotoSizes(Array.isArray(media.photo.sizes) ? media.photo.sizes : []),
+      rawMediaToken: registerMediaToken(media),
     };
   }
 
-  if (media._ === 'messageMediaDocument' && media.document) {
+  if (media._ === 'messageMediaDocument' && isRecord(media.document)) {
     const doc = media.document;
-    const mime: string = doc.mime_type ?? 'application/octet-stream';
+    const mime: string = typeof doc.mime_type === 'string' ? doc.mime_type : 'application/octet-stream';
     if (!mime.startsWith('video/') && mime !== 'image/gif') return null;
 
-    const attrs = doc.attributes ?? [];
+    const attrs = Array.isArray(doc.attributes) ? doc.attributes : [];
     const videoAttr = attrs.find((a: any) => a._ === 'documentAttributeVideo');
     const fileNameAttr = attrs.find((a: any) => a._ === 'documentAttributeFilename');
-    if (!videoAttr) return null;
+    if (!isRecord(videoAttr)) return null;
 
     const variant: VideoVariant = {
-      width: videoAttr.w ?? 0,
-      height: videoAttr.h ?? 0,
-      durationSec: videoAttr.duration ?? 0,
-      byteSize: doc.size ?? null,
+      width: toFiniteNumberOrNull(videoAttr.w) ?? 0,
+      height: toFiniteNumberOrNull(videoAttr.h) ?? 0,
+      durationSec: toFiniteNumberOrNull(videoAttr.duration) ?? 0,
+      byteSize: toFiniteNumberOrNull(doc.size),
       mimeType: mime,
       isStreaming: true,
       isDocumentAttachment: false,
@@ -57,9 +76,9 @@ export function extractMediaRef(media: any): MediaRef | null {
     return {
       kind: 'video',
       mimeType: mime,
-      fileName: fileNameAttr?.file_name ?? null,
+      fileName: isRecord(fileNameAttr) && typeof fileNameAttr.file_name === 'string' ? fileNameAttr.file_name : null,
       videoVariants: [variant],
-      rawMediaToken: media,
+      rawMediaToken: registerMediaToken(media),
     };
   }
 
@@ -70,22 +89,40 @@ function extractPhotoSizes(rawSizes: any[]): PhotoSize[] {
   const out: PhotoSize[] = [];
 
   for (const s of rawSizes) {
+    if (!isRecord(s) || typeof s.type !== 'string') continue;
+
     if (s._ === 'photoSizeProgressive') {
+      const width = toFiniteNumberOrNull(s.w);
+      const height = toFiniteNumberOrNull(s.h);
+      if (width === null || height === null) continue;
+      const sizes = Array.isArray(s.sizes) ? s.sizes.filter((size) => Number.isFinite(size)) : [];
       out.push({
         type: s.type,
-        width: s.w,
-        height: s.h,
-        byteSize: Math.max(...(s.sizes ?? [0])),
+        width,
+        height,
+        byteSize: sizes.length > 0 ? Math.max(...sizes) : null,
       });
     } else if (s._ === 'photoSize') {
+      const width = toFiniteNumberOrNull(s.w);
+      const height = toFiniteNumberOrNull(s.h);
+      if (width === null || height === null) continue;
       out.push({
         type: s.type,
-        width: s.w,
-        height: s.h,
-        byteSize: s.size ?? null,
+        width,
+        height,
+        byteSize: toFiniteNumberOrNull(s.size),
       });
     }
   }
 
   return out;
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === 'object' && value !== null;
+}
+
+function toFiniteNumberOrNull(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }

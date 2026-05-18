@@ -24,7 +24,23 @@ export function resolveTelegramHandles(w: any = window): TelegramHandles {
     appPeersManager: w.appPeersManager,
     rootScope: w.rootScope,
   };
-  const missing = REQUIRED.filter((key) => !found[key]);
+  const missing: string[] = [...REQUIRED.filter((key) => !found[key])];
+  if (found.appMessagesManager) {
+    if (typeof found.appMessagesManager.getHistory !== 'function') missing.push('appMessagesManager.getHistory');
+    if (typeof found.appMessagesManager.getMessageByPeer !== 'function') {
+      missing.push('appMessagesManager.getMessageByPeer');
+    }
+  }
+  if (
+    found.appDownloadManager &&
+    typeof found.appDownloadManager.download !== 'function' &&
+    typeof found.appDownloadManager.downloadToDisc !== 'function'
+  ) {
+    missing.push('appDownloadManager.download|downloadToDisc');
+  }
+  if (found.appPeersManager && typeof found.appPeersManager.getPeer !== 'function') {
+    missing.push('appPeersManager.getPeer');
+  }
   if (missing.length > 0) throw new BridgeIncompatibleError(missing);
   return found;
 }

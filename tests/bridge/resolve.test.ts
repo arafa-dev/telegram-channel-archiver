@@ -4,10 +4,10 @@ import { BridgeIncompatibleError, resolveTelegramHandles, waitForTelegramHandles
 describe('resolveTelegramHandles', () => {
   it('returns required Telegram manager handles and optional rootScope', () => {
     const w = {
-      appMessagesManager: {},
-      appDownloadManager: {},
+      appMessagesManager: { getHistory: () => undefined, getMessageByPeer: () => undefined },
+      appDownloadManager: { download: () => undefined },
       appImManager: {},
-      appPeersManager: {},
+      appPeersManager: { getPeer: () => undefined },
       rootScope: {},
     };
 
@@ -15,8 +15,30 @@ describe('resolveTelegramHandles', () => {
   });
 
   it('throws BridgeIncompatibleError listing missing required handles', () => {
-    expect(() => resolveTelegramHandles({ appMessagesManager: {}, appImManager: {} })).toThrow(
+    expect(() =>
+      resolveTelegramHandles({
+        appMessagesManager: { getHistory: () => undefined, getMessageByPeer: () => undefined },
+        appImManager: {},
+      })
+    ).toThrow(
       new BridgeIncompatibleError(['appDownloadManager', 'appPeersManager'])
+    );
+  });
+
+  it('throws BridgeIncompatibleError listing missing manager capabilities', () => {
+    expect(() =>
+      resolveTelegramHandles({
+        appMessagesManager: { getHistory: () => undefined },
+        appDownloadManager: {},
+        appImManager: {},
+        appPeersManager: {},
+      })
+    ).toThrow(
+      new BridgeIncompatibleError([
+        'appMessagesManager.getMessageByPeer',
+        'appDownloadManager.download|downloadToDisc',
+        'appPeersManager.getPeer',
+      ])
     );
   });
 });
@@ -29,10 +51,10 @@ describe('waitForTelegramHandles', () => {
     const promise = waitForTelegramHandles({ timeoutMs: 1000, intervalMs: 50, w });
     await vi.advanceTimersByTimeAsync(50);
     Object.assign(w, {
-      appMessagesManager: {},
-      appDownloadManager: {},
+      appMessagesManager: { getHistory: () => undefined, getMessageByPeer: () => undefined },
+      appDownloadManager: { downloadToDisc: () => undefined },
       appImManager: {},
-      appPeersManager: {},
+      appPeersManager: { getPeer: () => undefined },
     });
     await vi.advanceTimersByTimeAsync(50);
 
