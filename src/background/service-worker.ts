@@ -13,6 +13,16 @@ const log = (...args: unknown[]) => console.log('[tg-archive/sw]', ...args);
 
 const dirtyByPeer = new Map<number, { itemsSinceFlush: number; lastFlushMs: number }>();
 const peerQueues = new Map<number, Promise<unknown>>();
+const itemTransfers = new Map<
+  string,
+  {
+    peerId: number;
+    item: ArchiveItem;
+    mimeType: string;
+    totalBytes: number;
+    chunks: Map<number, Uint8Array>;
+  }
+>();
 const FLUSH_EVERY_ITEMS = 50;
 const FLUSH_EVERY_MS = 30_000;
 
@@ -68,6 +78,65 @@ async function maybeFlush(peerId: number, force = false): Promise<void> {
   dirtyByPeer.set(peerId, { itemsSinceFlush: 0, lastFlushMs: Date.now() });
 }
 
+async function recordDownloadedItem(peerId: number, item: ArchiveItem, bytes: ArrayBuffer, mimeType: string) {
+  const downloadState = await readArchive(peerId);
+  if (!downloadState) return { ok: false as const, error: 'NO_STATE' };
+
+  const download = await downloadBlob({
+    bytes,
+    mimeType,
+    channelTitle: downloadState.title,
+    peerId: downloadState.peerId,
+    filename: item.filename,
+  });
+
+  return withPeerQueue(peerId, async () => {
+    const state = await readArchive(peerId);
+    if (!state) return { ok: false as const, error: 'NO_STATE' };
+    const finalItem: ArchiveItem = {
+      ...item,
+      filename: download.filename,
+      downloadedAt: new Date().toISOString(),
+    };
+
+    await appendItem(state, finalItem);
+    state.seenIds.add(finalItem.messageId);
+    state.counts.downloaded += 1;
+    await writeArchive(state);
+
+    const dirty = dirtyFor(peerId);
+    dirty.itemsSinceFlush += 1;
+    await maybeFlush(peerId);
+
+    return { ok: true as const, value: { filename: finalItem.filename } };
+  });
+}
+
+function base64ToBytes(data: string): Uint8Array {
+  if (typeof Buffer !== 'undefined') return new Uint8Array(Buffer.from(data, 'base64'));
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function reconstructTransferBytes(transferId: string): ArrayBuffer {
+  const transfer = itemTransfers.get(transferId);
+  if (!transfer) throw new Error('UNKNOWN_TRANSFER');
+  const ordered = [...transfer.chunks.entries()].sort(([a], [b]) => a - b);
+  const bytes = new Uint8Array(transfer.totalBytes);
+  let offset = 0;
+  for (let expected = 0; expected < ordered.length; expected++) {
+    const [index, chunk] = ordered[expected]!;
+    if (index !== expected) throw new Error('TRANSFER_CHUNK_GAP');
+    if (offset + chunk.byteLength > bytes.byteLength) throw new Error('TRANSFER_TOO_LARGE');
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  if (offset !== transfer.totalBytes) throw new Error('TRANSFER_INCOMPLETE');
+  return bytes.buffer;
+}
+
 export const swHandler: SwHandler = async (req, _sender) => {
   log('req', req.kind);
   switch (req.kind) {
@@ -105,38 +174,41 @@ export const swHandler: SwHandler = async (req, _sender) => {
       });
     }
 
-    case 'recordItem': {
-      const downloadState = await readArchive(req.peerId);
-      if (!downloadState) return { ok: false, error: 'NO_STATE' };
-
-      const download = await downloadBlob({
-        bytes: req.bytes,
+    case 'beginItemTransfer': {
+      if (itemTransfers.has(req.transferId)) return { ok: false, error: 'TRANSFER_EXISTS' };
+      itemTransfers.set(req.transferId, {
+        peerId: req.peerId,
+        item: req.item,
         mimeType: req.mimeType,
-        channelTitle: downloadState.title,
-        peerId: downloadState.peerId,
-        filename: req.item.filename,
+        totalBytes: req.totalBytes,
+        chunks: new Map(),
       });
+      return { ok: true, value: null };
+    }
 
-      return withPeerQueue(req.peerId, async () => {
-        const state = await readArchive(req.peerId);
-        if (!state) return { ok: false, error: 'NO_STATE' };
-        const finalItem: ArchiveItem = {
-          ...req.item,
-          filename: download.filename,
-          downloadedAt: new Date().toISOString(),
-        };
+    case 'appendItemTransferChunk': {
+      const transfer = itemTransfers.get(req.transferId);
+      if (!transfer) return { ok: false, error: 'UNKNOWN_TRANSFER' };
+      transfer.chunks.set(req.index, base64ToBytes(req.data));
+      return { ok: true, value: null };
+    }
 
-        await appendItem(state, finalItem);
-        state.seenIds.add(finalItem.messageId);
-        state.counts.downloaded += 1;
-        await writeArchive(state);
+    case 'recordItemFromTransfer': {
+      const transfer = itemTransfers.get(req.transferId);
+      if (!transfer) return { ok: false, error: 'UNKNOWN_TRANSFER' };
+      try {
+        const bytes = reconstructTransferBytes(req.transferId);
+        itemTransfers.delete(req.transferId);
+        return recordDownloadedItem(transfer.peerId, transfer.item, bytes, transfer.mimeType);
+      } catch (e) {
+        itemTransfers.delete(req.transferId);
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    }
 
-        const dirty = dirtyFor(req.peerId);
-        dirty.itemsSinceFlush += 1;
-        await maybeFlush(req.peerId);
-
-        return { ok: true, value: { filename: finalItem.filename } };
-      });
+    case 'abortItemTransfer': {
+      itemTransfers.delete(req.transferId);
+      return { ok: true, value: null };
     }
 
     case 'recordFailure': {

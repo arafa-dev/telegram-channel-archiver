@@ -29,6 +29,7 @@ function page(): WalkPage {
       { meta: meta(3), mediaRef },
     ],
     skippedIds: [4, 5],
+    skippedMediaRefs: [],
     nextOffsetId: 99,
   };
 }

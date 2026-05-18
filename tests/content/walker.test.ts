@@ -49,6 +49,7 @@ describe('walkPage', () => {
     expect(page).toEqual({
       items: [{ meta: meta(1), mediaRef: downloadablePhoto }],
       skippedIds: [2, 3],
+      skippedMediaRefs: [emptyPhoto],
       nextOffsetId: 44,
     });
   });

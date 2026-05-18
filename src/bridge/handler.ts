@@ -5,7 +5,7 @@ import { getHistory } from './history';
 import { extractMessage, releaseMediaToken, resolveMediaToken } from './media';
 import { getCurrentPeer } from './peer';
 import type { TelegramHandles } from './resolve';
-import { parseDownloadMediaArgs, parseExtractMediaRefArgs, parseGetHistoryArgs } from './validation';
+import { parseDownloadMediaArgs, parseExtractMediaRefArgs, parseGetHistoryArgs, parseReleaseMediaTokenArgs } from './validation';
 
 export type BridgePostMessage = (message: unknown, targetOrigin: string) => void;
 
@@ -36,14 +36,15 @@ export async function handleBridgeReq(
       const args = parseDownloadMediaArgs(req.args);
       const rawMedia = resolveMediaToken(args.rawMediaToken);
 
-      try {
-        const blob = await downloadMedia(handles, rawMedia, args.fileName, (loaded, total) => {
-          postMessage(encodeEvt('downloadProgress', { requestId: args.requestId, loaded, total }), '*');
-        });
-        return { blob };
-      } finally {
-        releaseMediaToken(args.rawMediaToken);
-      }
+      const blob = await downloadMedia(handles, rawMedia, args.fileName, (loaded, total) => {
+        postMessage(encodeEvt('downloadProgress', { requestId: args.requestId, loaded, total }), '*');
+      });
+      return { blob };
+    }
+
+    case 'releaseMediaToken': {
+      const args = parseReleaseMediaTokenArgs(req.args);
+      return { released: releaseMediaToken(args.rawMediaToken) };
     }
   }
 }

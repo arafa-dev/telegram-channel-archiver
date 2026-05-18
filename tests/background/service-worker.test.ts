@@ -92,6 +92,27 @@ async function importWorker() {
   return import('../../src/background/service-worker');
 }
 
+function bytesToBase64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('base64');
+}
+
+async function recordViaTransfer(
+  swHandler: (req: any, sender: any) => Promise<any>,
+  opts: { transferId: string; peerId: number; item: ArchiveItem; bytes: Uint8Array; mimeType: string }
+) {
+  const send = (req: any) => swHandler(JSON.parse(JSON.stringify(req)), {});
+  await send({
+    kind: 'beginItemTransfer',
+    transferId: opts.transferId,
+    peerId: opts.peerId,
+    item: opts.item,
+    mimeType: opts.mimeType,
+    totalBytes: opts.bytes.byteLength,
+  });
+  await send({ kind: 'appendItemTransferChunk', transferId: opts.transferId, index: 0, data: bytesToBase64(opts.bytes) });
+  return send({ kind: 'recordItemFromTransfer', transferId: opts.transferId });
+}
+
 describe('service-worker handler', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -166,15 +187,18 @@ describe('service-worker handler', () => {
     }));
   });
 
-  test('recordItem downloads media, appends final item, updates counts, and does not flush first item immediately', async () => {
+  test('recordItemFromTransfer downloads media, appends final item, updates counts, and does not flush first item immediately', async () => {
     const { swHandler } = await importWorker();
     const state = storage.newArchiveState({ peerId: 42, title: 'News', username: null });
     storage.states.set(42, state);
 
-    const response = await swHandler(
-      { kind: 'recordItem', peerId: 42, item, bytes: new Uint8Array([1, 2, 3]).buffer, mimeType: 'image/jpeg' },
-      {}
-    );
+    const response = await recordViaTransfer(swHandler, {
+      transferId: 'record-item',
+      peerId: 42,
+      item,
+      bytes: new Uint8Array([1, 2, 3]),
+      mimeType: 'image/jpeg',
+    });
 
     expect(response).toEqual({ ok: true, value: { filename: 'photo.jpg' } });
     expect(downloads.downloadBlob).toHaveBeenCalledWith({
@@ -197,7 +221,37 @@ describe('service-worker handler', () => {
     expect(manifest.writeManifest).not.toHaveBeenCalled();
   });
 
-  test('overlapping recordItem mutations preserve both rows, counts, and seen ids', async () => {
+  test('records item from JSON-safe chunked transfer after Chrome-style serialization', async () => {
+    const { swHandler } = await importWorker();
+    const state = storage.newArchiveState({ peerId: 42, title: 'News', username: null });
+    storage.states.set(42, state);
+    const send = (req: any) => swHandler(JSON.parse(JSON.stringify(req)), {});
+
+    await expect(send({
+      kind: 'beginItemTransfer',
+      transferId: 'transfer-1',
+      peerId: 42,
+      item,
+      mimeType: 'image/jpeg',
+      totalBytes: 3,
+    })).resolves.toEqual({ ok: true, value: null });
+    await expect(send({ kind: 'appendItemTransferChunk', transferId: 'transfer-1', index: 0, data: 'AQID' })).resolves.toEqual({
+      ok: true,
+      value: null,
+    });
+    const response = await send({ kind: 'recordItemFromTransfer', transferId: 'transfer-1' });
+
+    expect(response).toEqual({ ok: true, value: { filename: 'photo.jpg' } });
+    expect(downloads.downloadBlob).toHaveBeenCalledWith(expect.objectContaining({
+      bytes: expect.any(ArrayBuffer),
+      mimeType: 'image/jpeg',
+    }));
+    expect(downloads.downloadBlob.mock.calls.length).toBeGreaterThan(0);
+    const downloadInput = (downloads.downloadBlob as any).mock.calls[0][0] as { bytes: ArrayBuffer };
+    expect([...new Uint8Array(downloadInput.bytes)]).toEqual([1, 2, 3]);
+  });
+
+  test('overlapping transfer commits preserve both rows, counts, and seen ids', async () => {
     const { swHandler } = await importWorker();
     const state = storage.newArchiveState({ peerId: 42, title: 'News', username: null });
     storage.states.set(42, state);
@@ -210,14 +264,20 @@ describe('service-worker handler', () => {
           })
       )
       .mockResolvedValueOnce({ downloadId: 78, relPath: 'TelegramArchive/news__42/second.jpg', filename: 'second.jpg' });
-    const first = swHandler(
-      { kind: 'recordItem', peerId: 42, item: { ...item, messageId: 101, filename: 'first.jpg' }, bytes: new ArrayBuffer(1), mimeType: 'image/jpeg' },
-      {}
-    );
-    const second = swHandler(
-      { kind: 'recordItem', peerId: 42, item: { ...item, messageId: 102, filename: 'second.jpg' }, bytes: new ArrayBuffer(1), mimeType: 'image/jpeg' },
-      {}
-    );
+    const first = recordViaTransfer(swHandler, {
+      transferId: 'first-transfer',
+      peerId: 42,
+      item: { ...item, messageId: 101, filename: 'first.jpg' },
+      bytes: new Uint8Array([1]),
+      mimeType: 'image/jpeg',
+    });
+    const second = recordViaTransfer(swHandler, {
+      transferId: 'second-transfer',
+      peerId: 42,
+      item: { ...item, messageId: 102, filename: 'second.jpg' },
+      bytes: new Uint8Array([2]),
+      mimeType: 'image/jpeg',
+    });
 
     await vi.waitFor(() => expect(downloads.downloadBlob).toHaveBeenCalledTimes(2));
     releaseFirst();
@@ -233,7 +293,7 @@ describe('service-worker handler', () => {
     }));
   });
 
-  test('recordItem uses actual Chrome final basename when downloads are uniquified', async () => {
+  test('recordItemFromTransfer uses actual Chrome final basename when downloads are uniquified', async () => {
     const { swHandler } = await importWorker();
     const state = storage.newArchiveState({ peerId: 42, title: 'News', username: null });
     storage.states.set(42, state);
@@ -243,10 +303,13 @@ describe('service-worker handler', () => {
       filename: 'photo (1).jpg',
     });
 
-    const response = await swHandler(
-      { kind: 'recordItem', peerId: 42, item, bytes: new Uint8Array([1, 2, 3]).buffer, mimeType: 'image/jpeg' },
-      {}
-    );
+    const response = await recordViaTransfer(swHandler, {
+      transferId: 'unique-name-transfer',
+      peerId: 42,
+      item,
+      bytes: new Uint8Array([1, 2, 3]),
+      mimeType: 'image/jpeg',
+    });
 
     expect(response).toEqual({ ok: true, value: { filename: 'photo (1).jpg' } });
     expect(ndjson.rows[0]).toEqual(expect.objectContaining({ filename: 'photo (1).jpg' }));

@@ -1,6 +1,6 @@
 export const SOURCE = 'tg-archive' as const;
 
-export type BridgeOp = 'getCurrentPeer' | 'getHistory' | 'extractMediaRef' | 'downloadMedia';
+export type BridgeOp = 'getCurrentPeer' | 'getHistory' | 'extractMediaRef' | 'downloadMedia' | 'releaseMediaToken';
 
 export type BridgeEvent = 'downloadProgress' | 'bridgeReady';
 
@@ -30,7 +30,7 @@ export interface EvtEnvelope {
 
 export type AnyEnvelope = ReqEnvelope | ResEnvelope | EvtEnvelope;
 
-const BRIDGE_OPS = new Set<BridgeOp>(['getCurrentPeer', 'getHistory', 'extractMediaRef', 'downloadMedia']);
+const BRIDGE_OPS = new Set<BridgeOp>(['getCurrentPeer', 'getHistory', 'extractMediaRef', 'downloadMedia', 'releaseMediaToken']);
 const BRIDGE_EVENTS = new Set<BridgeEvent>(['downloadProgress', 'bridgeReady']);
 
 export function encodeReq(id: number, op: BridgeOp, args?: unknown): ReqEnvelope {

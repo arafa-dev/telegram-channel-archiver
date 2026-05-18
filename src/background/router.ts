@@ -2,7 +2,10 @@ export type SwRequest =
   | { kind: 'init'; peerId: number; title: string; username: string | null }
   | { kind: 'getState'; peerId: number }
   | { kind: 'recordSeen'; peerId: number; messageIds: number[]; skippedIds?: number[]; cursor: { offsetId: number } }
-  | { kind: 'recordItem'; peerId: number; item: import('../shared/types').ArchiveItem; bytes: ArrayBuffer; mimeType: string }
+  | { kind: 'beginItemTransfer'; transferId: string; peerId: number; item: import('../shared/types').ArchiveItem; mimeType: string; totalBytes: number }
+  | { kind: 'appendItemTransferChunk'; transferId: string; index: number; data: string }
+  | { kind: 'recordItemFromTransfer'; transferId: string }
+  | { kind: 'abortItemTransfer'; transferId: string }
   | { kind: 'recordFailure'; peerId: number; failure: import('../shared/types').ArchiveFailure }
   | { kind: 'flushPersist'; peerId: number }
   | { kind: 'complete'; peerId: number }

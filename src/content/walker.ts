@@ -10,6 +10,7 @@ export interface WalkItem {
 export interface WalkPage {
   items: WalkItem[];
   skippedIds: number[];
+  skippedMediaRefs: MediaRef[];
   nextOffsetId: number;
 }
 
@@ -32,15 +33,17 @@ export async function walkPage(
   const page = await bridge.call<HistoryPage>('getHistory', { peerId, offsetId, limit });
   const items: WalkItem[] = [];
   const skippedIds: number[] = [];
+  const skippedMediaRefs: MediaRef[] = [];
 
   for (const message of page.messages) {
     if (!message.mediaRef || !isMediaDownloadable(message.mediaRef)) {
       skippedIds.push(message.meta.messageId);
+      if (message.mediaRef) skippedMediaRefs.push(message.mediaRef);
       continue;
     }
 
     items.push({ meta: message.meta, mediaRef: message.mediaRef });
   }
 
-  return { items, skippedIds, nextOffsetId: page.nextOffsetId };
+  return { items, skippedIds, skippedMediaRefs, nextOffsetId: page.nextOffsetId };
 }

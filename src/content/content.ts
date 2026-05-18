@@ -6,8 +6,10 @@ import { BridgeClient } from './bridge-client';
 import { LifecycleWatcher } from './lifecycle';
 import { DownloadPool } from './pool';
 import { finalizePageProgress } from './progress';
+import { partitionPageItemsForCatchup, shouldAdvancePageCursor, shouldContinueAfterPage } from './progress-policy';
 import { clearRunGlobalsIfCurrent } from './run-resources';
 import { callSw, openKeepalivePort } from './sw-client';
+import { recordArchiveItemViaTransfer } from './transfer';
 import { Panel, type PanelView } from './ui/panel';
 import { walkPage, type WalkItem } from './walker';
 
@@ -108,6 +110,7 @@ async function onStart(): Promise<void> {
 
   const runKeepalivePort = openKeepalivePort();
   const runPool = new DownloadPool(CONCURRENCY);
+  const runTokens = new Set<string>();
   keepalivePort = runKeepalivePort;
   pool = runPool;
 
@@ -124,25 +127,37 @@ async function onStart(): Promise<void> {
       if (!isRunActive(peer.peerId, runId)) break;
 
       const page = await walkPage(bridge, peer.peerId, offsetId, PAGE_LIMIT);
-      const fresh = page.items.filter((item) => !seenIds.has(item.meta.messageId));
+      const partition = partitionPageItemsForCatchup(page.items, (item) => seenIds.has(item.meta.messageId));
+      const fresh = partition.freshCandidates.filter((item) => !seenIds.has(item.meta.messageId));
+      const sawSeenDownloadable = partition.sawSeenDownloadable;
+      await releaseMediaRefs([...partition.releasableItems.map((item) => item.mediaRef), ...page.skippedMediaRefs]);
 
       if (fresh.length > 0) setView({ found: view.found + fresh.length, status: 'downloading' });
 
       const acceptedFreshIds: number[] = [];
+      let pageHadFailure = false;
       for (const item of fresh) {
         await waitIfPaused();
         if (!isRunActive(peer.peerId, runId)) break;
-        enqueueDownload(runPool, peer.peerId, runId, item);
+        enqueueDownload(runPool, peer.peerId, runId, item, runTokens, () => {
+          pageHadFailure = true;
+        });
         acceptedFreshIds.push(item.meta.messageId);
       }
 
+      const initiallyInterrupted = !isRunActive(peer.peerId, runId) || acceptedFreshIds.length < fresh.length;
       const progress = await finalizePageProgress({
         page,
         seenIds,
         currentOffsetId: offsetId,
-        initiallyInterrupted: !isRunActive(peer.peerId, runId) || acceptedFreshIds.length < fresh.length,
+        initiallyInterrupted,
         drain: () => runPool.drain(),
-        isInterrupted: () => !isRunActive(peer.peerId, runId),
+        isInterrupted: () =>
+          !shouldAdvancePageCursor({
+            interrupted: !isRunActive(peer.peerId, runId),
+            hadFailures: pageHadFailure,
+            sawSeenDownloadable,
+          }),
       });
       await callSw({
         kind: 'recordSeen',
@@ -150,7 +165,13 @@ async function onStart(): Promise<void> {
         ...progress.recordSeen,
       });
 
-      if (!isRunActive(peer.peerId, runId) || progress.newOffsetId === offsetId || progress.newOffsetId === 0) break;
+      const advancedCursor = progress.newOffsetId !== offsetId;
+      if (
+        !isRunActive(peer.peerId, runId) ||
+        !shouldContinueAfterPage({ nextOffsetId: progress.newOffsetId, advancedCursor, sawSeenDownloadable })
+      ) {
+        break;
+      }
       offsetId = progress.newOffsetId;
       if (fresh.length === 0) setView({ status: 'walking' });
     }
@@ -163,6 +184,7 @@ async function onStart(): Promise<void> {
   } catch (e: unknown) {
     if (isRunActive(peer.peerId, runId)) setView({ status: 'error', error: errorMessage(e) });
   } finally {
+    await releaseTokens(runTokens);
     disconnectPort(runKeepalivePort);
     const nextGlobals = clearRunGlobalsIfCurrent(
       { activeRunId, pool, keepalivePort },
@@ -174,7 +196,16 @@ async function onStart(): Promise<void> {
   }
 }
 
-function enqueueDownload(runPool: DownloadPool, peerId: number, runId: number, item: WalkItem): void {
+function enqueueDownload(
+  runPool: DownloadPool,
+  peerId: number,
+  runId: number,
+  item: WalkItem,
+  runTokens: Set<string>,
+  onTerminalFailure: () => void
+): void {
+  const token = mediaToken(item.mediaRef);
+  if (token) runTokens.add(token);
   runPool.enqueue({
     id: item.meta.messageId,
     run: async () => {
@@ -195,20 +226,20 @@ function enqueueDownload(runPool: DownloadPool, peerId: number, runId: number, i
       if (!isRunActive(peerId, runId)) return;
       const archiveItem = await buildArchiveItem(item.meta, item.mediaRef, filename, blob);
       if (!isRunActive(peerId, runId)) return;
-      const bytes = await blob.arrayBuffer();
-      if (!isRunActive(peerId, runId)) return;
-      await callSw({
-        kind: 'recordItem',
+      await recordArchiveItemViaTransfer(callSw, {
         peerId,
         item: archiveItem,
-        bytes,
+        blob,
         mimeType: blob.type || item.mediaRef.mimeType,
       });
       if (!isRunActive(peerId, runId)) return;
+      await releaseMediaRef(item.mediaRef);
+      if (token) runTokens.delete(token);
       bumpBandwidth(blob.size);
       setView({ downloaded: view.downloaded + 1 });
     },
     onFailure: async (e) => {
+      onTerminalFailure();
       if (!isRunActive(peerId, runId)) return;
       const failure: ArchiveFailure = {
         messageId: item.meta.messageId,
@@ -216,6 +247,8 @@ function enqueueDownload(runPool: DownloadPool, peerId: number, runId: number, i
         lastTriedAt: new Date().toISOString(),
       };
       await callSw({ kind: 'recordFailure', peerId, failure });
+      await releaseMediaRef(item.mediaRef);
+      if (token) runTokens.delete(token);
       if (isRunActive(peerId, runId)) setView({ failed: view.failed + 1 });
     },
   });
@@ -276,8 +309,11 @@ async function handlePeerChange(peerId: number | null): Promise<void> {
   pauseResolvers.splice(0).forEach((resolve) => resolve());
   pool?.clearQueue();
   if (peerId !== null) await callSw({ kind: 'flushPersist', peerId }).catch(() => undefined);
+  if (keepalivePort) disconnectPort(keepalivePort);
+  keepalivePort = null;
+  pool = null;
   await refreshPeer();
-  if (pool) setView({ status: 'paused', error: 'Archive paused because the channel changed.' });
+  setView({ status: 'idle', error: 'Archive stopped because the channel changed.' });
 }
 
 function setView(patch: Partial<PanelView>): void {
@@ -310,6 +346,26 @@ function disconnectPort(port: chrome.runtime.Port): void {
   } catch {
     // A port may already be disconnected by a cancel path.
   }
+}
+
+function mediaToken(mediaRef: MediaRef): string | null {
+  return typeof mediaRef.rawMediaToken === 'string' ? mediaRef.rawMediaToken : null;
+}
+
+async function releaseMediaRef(mediaRef: MediaRef): Promise<void> {
+  const token = mediaToken(mediaRef);
+  if (!token) return;
+  await bridge.call('releaseMediaToken', { rawMediaToken: token }).catch(() => undefined);
+}
+
+async function releaseMediaRefs(mediaRefs: MediaRef[]): Promise<void> {
+  await Promise.all(mediaRefs.map((mediaRef) => releaseMediaRef(mediaRef)));
+}
+
+async function releaseTokens(tokens: Set<string>): Promise<void> {
+  const pending = [...tokens];
+  tokens.clear();
+  await Promise.all(pending.map((rawMediaToken) => bridge.call('releaseMediaToken', { rawMediaToken }).catch(() => undefined)));
 }
 
 function errorMessage(e: unknown): string {

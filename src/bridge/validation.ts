@@ -14,6 +14,10 @@ export interface DownloadMediaArgs {
   requestId: number;
 }
 
+export interface ReleaseMediaTokenArgs {
+  rawMediaToken: string;
+}
+
 export function parseGetHistoryArgs(args: unknown): GetHistoryArgs {
   if (!isRecord(args)) throwInvalidArgs();
   const { peerId, offsetId, limit } = args;
@@ -54,6 +58,11 @@ export function parseDownloadMediaArgs(args: unknown): DownloadMediaArgs {
   }
 
   return { rawMediaToken, fileName, requestId };
+}
+
+export function parseReleaseMediaTokenArgs(args: unknown): ReleaseMediaTokenArgs {
+  if (!isRecord(args) || typeof args.rawMediaToken !== 'string') throwInvalidArgs();
+  return { rawMediaToken: args.rawMediaToken };
 }
 
 function isRecord(value: unknown): value is Record<string, any> {
