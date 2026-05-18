@@ -1,5 +1,12 @@
 import { IDBFactory } from 'fake-indexeddb';
-import { deleteNdjson, readNdjson, writeNdjson } from '../../src/background/idb';
+import {
+  appendFailure,
+  deleteNdjson,
+  readFailures,
+  readNdjson,
+  writeFailures,
+  writeNdjson,
+} from '../../src/background/idb';
 
 describe('background IndexedDB wrappers', () => {
   beforeEach(() => {
@@ -25,6 +32,19 @@ describe('background IndexedDB wrappers', () => {
     await deleteNdjson(123);
 
     await expect(readNdjson(123)).resolves.toBe('');
+  });
+
+  test('failure helpers persist failures by peer id', async () => {
+    const first = { messageId: 1, reason: 'DOWNLOAD_FAILED', lastTriedAt: '2026-05-18T10:00:00.000Z' };
+    const second = { messageId: 2, reason: 'FLOOD_WAIT_5', lastTriedAt: '2026-05-18T10:01:00.000Z' };
+
+    await expect(readFailures(123)).resolves.toEqual([]);
+    await appendFailure(123, first);
+    await appendFailure(123, second);
+
+    await expect(readFailures(123)).resolves.toEqual([first, second]);
+    await writeFailures(123, [second]);
+    await expect(readFailures(123)).resolves.toEqual([second]);
   });
 
   test('writeNdjson waits for transaction completion after request success', async () => {

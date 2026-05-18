@@ -20,6 +20,7 @@ export interface TextDownloadInput {
 export interface DownloadResult {
   downloadId: number;
   relPath: string;
+  filename: string;
 }
 
 function archiveRelPath(input: { channelTitle: string; peerId: number; filename: string }): string {
@@ -39,7 +40,8 @@ export async function downloadBlob(input: DownloadInput): Promise<DownloadResult
       saveAs: false,
     });
     await waitForCompletion(downloadId);
-    return { downloadId, relPath };
+    const item = await findDownload(downloadId);
+    return { downloadId, relPath, filename: basename(item?.filename) ?? input.filename };
   } finally {
     await revokeObjectUrl(url);
   }
@@ -58,7 +60,8 @@ export async function downloadTextOverwrite(input: TextDownloadInput): Promise<D
       saveAs: false,
     });
     await waitForCompletion(downloadId);
-    return { downloadId, relPath };
+    const item = await findDownload(downloadId);
+    return { downloadId, relPath, filename: basename(item?.filename) ?? input.filename };
   } finally {
     await revokeObjectUrl(url);
   }
@@ -66,22 +69,52 @@ export async function downloadTextOverwrite(input: TextDownloadInput): Promise<D
 
 function waitForCompletion(id: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    const cleanup = () => chrome.downloads.onChanged.removeListener(onChange);
+    let settled = false;
+    const cleanup = () => {
+      chrome.downloads.onChanged.removeListener(onChange);
+    };
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn();
+    };
     const onChange = (delta: chrome.downloads.DownloadDelta) => {
       if (delta.id !== id) return;
 
       if (delta.state?.current === 'complete') {
-        cleanup();
-        resolve();
+        settle(resolve);
         return;
       }
 
       if (delta.state?.current === 'interrupted') {
-        cleanup();
-        reject(new Error(`DOWNLOAD_INTERRUPTED: ${delta.error?.current ?? 'unknown'}`));
+        settle(() => reject(new Error(`DOWNLOAD_INTERRUPTED: ${delta.error?.current ?? 'unknown'}`)));
       }
     };
 
     chrome.downloads.onChanged.addListener(onChange);
+    void findDownload(id)
+      .then((item) => {
+        if (item?.state === 'complete') {
+          settle(resolve);
+          return;
+        }
+        if (item?.state === 'interrupted') {
+          settle(() => reject(new Error(`DOWNLOAD_INTERRUPTED: ${item.error ?? 'unknown'}`)));
+        }
+      })
+      .catch((error: unknown) => {
+        settle(() => reject(error));
+      });
   });
+}
+
+async function findDownload(id: number): Promise<chrome.downloads.DownloadItem | null> {
+  const [item] = await chrome.downloads.search({ id });
+  return item ?? null;
+}
+
+function basename(path: string | undefined): string | null {
+  if (!path) return null;
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? null;
 }
