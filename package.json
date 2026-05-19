@@ -1,6 +1,8 @@
 {
   "name": "telegram-channel-archiver",
   "version": "0.1.0",
+  "description": "Chrome extension for archiving media from Telegram Web K channels.",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {
