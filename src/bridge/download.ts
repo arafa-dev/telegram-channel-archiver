@@ -5,7 +5,13 @@ export interface DownloadProgressCallback {
 }
 
 const DIRECT_DOWNLOAD_GRACE_MS = 750;
+const FALLBACK_CAPTURE_TIMEOUT_MS = 5 * 60 * 1000;
 const DIRECT_DOWNLOAD_TIMEOUT = Symbol('DIRECT_DOWNLOAD_TIMEOUT');
+
+interface DownloadTarget {
+  media: any;
+  thumb?: any;
+}
 
 export async function downloadMedia(
   h: TelegramHandles,
@@ -14,11 +20,13 @@ export async function downloadMedia(
   onProgress?: DownloadProgressCallback
 ): Promise<Blob> {
   const adm = h.appDownloadManager;
+  const target = toDownloadTarget(rawMedia);
+  const request = downloadRequest(target, fileName);
 
-  if (rawMedia?._ === 'document' && typeof h.apiFileManager?.downloadMedia === 'function') {
+  if (shouldUseApiFileManager(target) && typeof h.apiFileManager?.downloadMedia === 'function') {
     try {
       const out = await withTimeout(
-        Promise.resolve(h.apiFileManager.downloadMedia({ media: rawMedia, fileName })),
+        Promise.resolve(h.apiFileManager.downloadMedia(request)),
         5 * 60 * 1000
       );
       const blob = toBlob(out);
@@ -31,7 +39,7 @@ export async function downloadMedia(
 
   if (typeof adm.download === 'function') {
     try {
-      const result = adm.download({ media: rawMedia, fileName });
+      const result = adm.download(request);
       attachProgress(result, onProgress);
       const out = await waitForDirectDownload(result);
       if (out !== DIRECT_DOWNLOAD_TIMEOUT) {
@@ -44,7 +52,7 @@ export async function downloadMedia(
     }
   }
 
-  return enqueueFallbackDownload(() => downloadToDiscBlob(adm, rawMedia, fileName, onProgress));
+  return enqueueFallbackDownload(() => downloadToDiscBlob(adm, target, fileName, onProgress));
 }
 
 let fallbackQueue: Promise<void> = Promise.resolve();
@@ -104,18 +112,25 @@ function copyToArrayBuffer(view: ArrayBufferView): ArrayBuffer {
 
 async function downloadToDiscBlob(
   adm: any,
-  rawMedia: any,
+  target: DownloadTarget,
   fileName: string,
   onProgress?: DownloadProgressCallback
 ): Promise<Blob> {
   if (typeof adm.downloadToDisc !== 'function') throw new Error('DOWNLOAD_UNAVAILABLE');
 
-  const result = adm.downloadToDisc({ media: rawMedia, fileName }, true);
-  attachProgress(result, onProgress);
-  const out = await withTimeout(Promise.resolve(result), 5 * 60 * 1000);
-  const blob = toBlob(out);
-  if (!blob) throw new Error('DOWNLOAD_EMPTY');
-  return blob;
+  return captureObjectUrlBlob(async (capturedBlob) => {
+    const result = adm.downloadToDisc(downloadRequest(target, fileName), true);
+    attachProgress(result, onProgress);
+
+    const directBlob = Promise.resolve(result).then((out) => {
+      const blob = toBlob(out);
+      if (blob) return blob;
+      if (isPromiseLike(result)) throw new Error('DOWNLOAD_EMPTY');
+      return capturedBlob;
+    });
+
+    return withTimeout(Promise.race([capturedBlob, directBlob]), FALLBACK_CAPTURE_TIMEOUT_MS);
+  });
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -127,4 +142,56 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return Promise.race([promise, timeout]).finally(() => {
     if (timer !== undefined) clearTimeout(timer);
   });
+}
+
+async function captureObjectUrlBlob<T>(fn: (capturedBlob: Promise<Blob>) => Promise<T>): Promise<T> {
+  if (typeof URL.createObjectURL !== 'function') {
+    return fn(Promise.reject(new Error('DOWNLOAD_EMPTY')));
+  }
+
+  const originalCreateObjectURL = URL.createObjectURL;
+  let resolveCapturedBlob: (blob: Blob) => void = () => undefined;
+  const capturedBlob = new Promise<Blob>((resolve) => {
+    resolveCapturedBlob = resolve;
+  });
+  const patchedCreateObjectURL: typeof URL.createObjectURL = (object) => {
+    if (object instanceof Blob) resolveCapturedBlob(object);
+    return originalCreateObjectURL.call(URL, object);
+  };
+
+  URL.createObjectURL = patchedCreateObjectURL;
+  try {
+    return await fn(capturedBlob);
+  } finally {
+    if (URL.createObjectURL === patchedCreateObjectURL) {
+      URL.createObjectURL = originalCreateObjectURL;
+    }
+  }
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    ((typeof value === 'object' && value !== null) || typeof value === 'function') &&
+    typeof (value as { then?: unknown }).then === 'function'
+  );
+}
+
+function toDownloadTarget(rawMedia: any): DownloadTarget {
+  if (isRecord(rawMedia) && isRecord(rawMedia.media)) {
+    return { media: rawMedia.media, thumb: rawMedia.thumb };
+  }
+
+  return { media: rawMedia };
+}
+
+function downloadRequest(target: DownloadTarget, fileName: string): { media: any; fileName: string; thumb?: any } {
+  return target.thumb ? { media: target.media, thumb: target.thumb, fileName } : { media: target.media, fileName };
+}
+
+function shouldUseApiFileManager(target: DownloadTarget): boolean {
+  return target.media?._ === 'document' || (target.media?._ === 'photo' && !!target.thumb);
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === 'object' && value !== null;
 }

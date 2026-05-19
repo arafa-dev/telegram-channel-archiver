@@ -50,7 +50,7 @@ describe('handleBridgeReq downloadMedia token lifecycle', () => {
       )
     ).resolves.toEqual({ blob });
 
-    expect(resolveMediaToken(token)).toBe(media.photo);
+    expect(resolveMediaToken(token)).toEqual({ media: media.photo, thumb: null });
   });
 
   it('releases the media token only through the explicit release op', async () => {

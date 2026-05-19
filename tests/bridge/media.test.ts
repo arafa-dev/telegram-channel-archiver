@@ -30,14 +30,14 @@ describe('extractMessage', () => {
         rawMediaToken: expect.any(String),
       },
     });
-    expect(resolveMediaToken(normalized.mediaRef?.rawMediaToken)).toBe(media.photo);
+    expect(resolveMediaToken(normalized.mediaRef?.rawMediaToken)).toEqual({ media: media.photo, thumb: null });
   });
 
   it('deletes released media tokens and resolves released tokens with a clear error', () => {
     const media = { _: 'messageMediaPhoto', photo: { sizes: [] } };
     const token = extractMediaRef(media)?.rawMediaToken;
 
-    expect(resolveMediaToken(token)).toBe(media.photo);
+    expect(resolveMediaToken(token)).toEqual({ media: media.photo, thumb: null });
     expect(releaseMediaToken(token)).toBe(true);
     expect(() => resolveMediaToken(token)).toThrow('UNKNOWN_MEDIA_TOKEN');
     expect(releaseMediaToken(token)).toBe(false);
@@ -52,21 +52,28 @@ describe('extractMessage', () => {
 
 describe('extractMediaRef', () => {
   it('extracts photo sizes while skipping preview-only sizes', () => {
-    expect(
-      extractMediaRef({
-        _: 'messageMediaPhoto',
-        photo: {
-          sizes: [
-            { _: 'photoSizeStripped', type: 'i' },
-            { _: 'photoSize', type: 'm', w: 320, h: 240, size: 1024 },
-            { _: 'photoSizeProgressive', type: 'y', w: 1280, h: 960, sizes: [1000, 2000, 1500] },
-          ],
-        },
-      })?.photoSizes
-    ).toEqual([
+    const rawSizes = [
+      { _: 'photoSizeStripped', type: 'i' },
+      { _: 'photoSize', type: 'm', w: 320, h: 240, size: 1024 },
+      { _: 'photoSizeProgressive', type: 'y', w: 1280, h: 960, sizes: [1000, 2000, 1500] },
+    ];
+    const extracted = extractMediaRef({
+      _: 'messageMediaPhoto',
+      photo: {
+        sizes: rawSizes,
+      },
+    });
+
+    expect(extracted?.photoSizes).toEqual([
       { type: 'm', width: 320, height: 240, byteSize: 1024 },
       { type: 'y', width: 1280, height: 960, byteSize: 2000 },
     ]);
+    expect(resolveMediaToken(extracted?.rawMediaToken)).toEqual({
+      media: {
+        sizes: rawSizes,
+      },
+      thumb: rawSizes[2],
+    });
   });
 
   it('extracts animated GIF documents as MP4 videos for Telegram Web K downloads', () => {

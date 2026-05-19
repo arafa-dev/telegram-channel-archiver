@@ -5,6 +5,11 @@ export interface MessageNormalized {
   mediaRef: MediaRef | null;
 }
 
+interface PhotoDownloadMedia {
+  media: any;
+  thumb: any | null;
+}
+
 const mediaRegistry = new Map<string, any>();
 let nextMediaToken = 1;
 
@@ -48,12 +53,14 @@ export function extractMediaRef(media: any): MediaRef | null {
   if (!isRecord(media)) return null;
 
   if (media._ === 'messageMediaPhoto' && isRecord(media.photo)) {
+    const rawSizes = Array.isArray(media.photo.sizes) ? media.photo.sizes : [];
+    const thumb = pickRawPhotoThumb(rawSizes);
     return {
       kind: 'photo',
       mimeType: 'image/jpeg',
       fileName: null,
-      photoSizes: extractPhotoSizes(Array.isArray(media.photo.sizes) ? media.photo.sizes : []),
-      rawMediaToken: registerMediaToken(media.photo),
+      photoSizes: extractPhotoSizes(rawSizes),
+      rawMediaToken: registerMediaToken({ media: media.photo, thumb } satisfies PhotoDownloadMedia),
     };
   }
 
@@ -121,6 +128,26 @@ function extractPhotoSizes(rawSizes: any[]): PhotoSize[] {
   }
 
   return out;
+}
+
+function pickRawPhotoThumb(rawSizes: any[]): any | null {
+  let best: { raw: any; score: number } | null = null;
+
+  for (const s of rawSizes) {
+    if (!isRecord(s) || typeof s.type !== 'string') continue;
+    const width = toFiniteNumberOrNull(s.w);
+    const height = toFiniteNumberOrNull(s.h);
+    if (width === null || height === null) continue;
+
+    const byteSize =
+      s._ === 'photoSizeProgressive' && Array.isArray(s.sizes)
+        ? Math.max(...s.sizes.filter((size) => Number.isFinite(size)), 0)
+        : toFiniteNumberOrNull(s.size) ?? 0;
+    const score = byteSize > 0 ? byteSize : width * height;
+    if (!best || score > best.score) best = { raw: s, score };
+  }
+
+  return best?.raw ?? null;
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

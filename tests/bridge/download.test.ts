@@ -78,6 +78,25 @@ describe('downloadMedia direct download path', () => {
     expect(adm.download).toHaveBeenCalledOnce();
   });
 
+  it('passes selected photo thumbs to apiFileManager.downloadMedia', async () => {
+    const blob = new Blob(['photo'], { type: 'image/jpeg' });
+    const photo = { _: 'photo', id: 'photo-id' };
+    const thumb = { _: 'photoSizeProgressive', type: 'y', w: 705, h: 1280, sizes: [78792] };
+    const adm = {
+      download: vi.fn().mockRejectedValue(new Error('unexpected direct download')),
+      downloadToDisc: vi.fn(() => {
+        throw new Error('unexpected fallback download');
+      }),
+    };
+    const apiFileManager = { downloadMedia: vi.fn().mockResolvedValue(blob) };
+
+    await expect(downloadMedia(handles(adm, apiFileManager), { media: photo, thumb }, 'a.jpg')).resolves.toBe(blob);
+
+    expect(apiFileManager.downloadMedia).toHaveBeenCalledWith({ media: photo, thumb, fileName: 'a.jpg' });
+    expect(adm.download).not.toHaveBeenCalled();
+    expect(adm.downloadToDisc).not.toHaveBeenCalled();
+  });
+
   it('falls back to downloadToDisc after download failure', async () => {
     const fallbackBlob = new Blob(['fallback']);
     const adm = {
@@ -108,6 +127,23 @@ describe('downloadMedia direct download path', () => {
 
     await expect(promise).resolves.toBe(fallbackBlob);
     expect(adm.downloadToDisc).toHaveBeenCalledWith({ media: {}, fileName: 'a.jpg' }, true);
+  });
+
+  it('captures the Blob created by downloadToDisc when Telegram resolves without a value', async () => {
+    const fallbackBlob = new Blob(['fallback'], { type: 'video/mp4' });
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:telegram/fallback');
+    const adm = {
+      download: vi.fn().mockRejectedValue(new Error('download failed')),
+      downloadToDisc: vi.fn(() => {
+        URL.createObjectURL(fallbackBlob);
+        return undefined;
+      }),
+    };
+
+    await expect(downloadMedia(handles(adm), {}, 'a.mp4')).resolves.toBe(fallbackBlob);
+    expect(adm.downloadToDisc).toHaveBeenCalledWith({ media: {}, fileName: 'a.mp4' }, true);
+    expect(createObjectURL).toHaveBeenCalledWith(fallbackBlob);
+    expect(URL.createObjectURL).toBe(createObjectURL);
   });
 });
 
