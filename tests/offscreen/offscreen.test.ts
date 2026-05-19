@@ -174,7 +174,17 @@ describe('offscreen document message bridge', () => {
 
   test('rejects transfers that exceed receiver limits', async () => {
     const listener = await importOffscreenWithListener();
-    const oversizedTotalBytes = 512 * 1024 * 1024 + 1;
+    const telegramLargeVideoBytes = 700_015_062;
+    const oversizedTotalBytes = 2 * 1024 * 1024 * 1024 + 1;
+
+    expect(send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: 'telegram-large-video', mimeType: 'video/mp4', totalBytes: telegramLargeVideoBytes })).toHaveBeenCalledWith({
+      ok: true,
+      value: null,
+    });
+    expect(send(listener, { target: 'offscreen', kind: 'bytesAbort', transferId: 'telegram-large-video' })).toHaveBeenCalledWith({
+      ok: true,
+      value: null,
+    });
 
     expect(send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: 'huge', mimeType: 'application/octet-stream', totalBytes: oversizedTotalBytes })).toHaveBeenCalledWith({
       ok: false,
@@ -182,7 +192,7 @@ describe('offscreen document message bridge', () => {
     });
 
     send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: 'transfer-1', mimeType: 'application/octet-stream', totalBytes: 100_000 });
-    expect(send(listener, { target: 'offscreen', kind: 'bytesChunk', transferId: 'transfer-1', index: 0, data: 'A'.repeat(80 * 1024) })).toHaveBeenCalledWith({
+    expect(send(listener, { target: 'offscreen', kind: 'bytesChunk', transferId: 'transfer-1', index: 0, data: 'A'.repeat(300 * 1024) })).toHaveBeenCalledWith({
       ok: false,
       error: 'CHUNK_TOO_LARGE',
     });
@@ -221,11 +231,36 @@ describe('offscreen document message bridge', () => {
       error: 'TRANSFER_ALREADY_EXISTS',
     });
 
-    vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+    vi.advanceTimersByTime(15 * 60 * 1000 + 1);
 
     expect(send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: 'transfer-1', mimeType: 'text/plain', totalBytes: 1 })).toHaveBeenCalledWith({
       ok: true,
       value: null,
+    });
+  });
+
+  test('refreshes transfer TTL while chunks are arriving', async () => {
+    vi.useFakeTimers();
+    const listener = await importOffscreenWithListener();
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:extension/test');
+
+    expect(send(listener, { target: 'offscreen', kind: 'bytesBegin', transferId: 'slow-large-transfer', mimeType: 'text/plain', totalBytes: 2 })).toHaveBeenCalledWith({
+      ok: true,
+      value: null,
+    });
+    vi.advanceTimersByTime(14 * 60 * 1000);
+    expect(send(listener, { target: 'offscreen', kind: 'bytesChunk', transferId: 'slow-large-transfer', index: 0, data: base64([1]) })).toHaveBeenCalledWith({
+      ok: true,
+      value: null,
+    });
+    vi.advanceTimersByTime(14 * 60 * 1000);
+    expect(send(listener, { target: 'offscreen', kind: 'bytesChunk', transferId: 'slow-large-transfer', index: 1, data: base64([2]) })).toHaveBeenCalledWith({
+      ok: true,
+      value: null,
+    });
+    expect(send(listener, { target: 'offscreen', kind: 'bytesEnd', transferId: 'slow-large-transfer' })).toHaveBeenCalledWith({
+      ok: true,
+      value: { url: 'blob:extension/test' },
     });
   });
 

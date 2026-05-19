@@ -1,0 +1,5 @@
+export const TRANSFER_BYTE_CHUNK_SIZE = 192 * 1024;
+export const TRANSFER_MAX_BASE64_CHUNK_CHARS = 256 * 1024;
+export const TRANSFER_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+export const TRANSFER_MAX_ACTIVE = 8;
+export const TRANSFER_TTL_MS = 15 * 60 * 1000;

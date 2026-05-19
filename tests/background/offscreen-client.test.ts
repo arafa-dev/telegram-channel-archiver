@@ -63,9 +63,9 @@ describe('background offscreen client', () => {
     const { offscreen, runtime } = await installChromeBoundaryMock({ hasDocument: vi.fn(async () => false) });
     const { bytesToObjectUrl } = await importClient();
     const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:extension/test');
-    const bytes = new Uint8Array(70_000);
+    const bytes = new Uint8Array(300_000);
     bytes[0] = 1;
-    bytes[69_999] = 255;
+    bytes[299_999] = 255;
 
     await expect(bytesToObjectUrl(bytes.buffer, 'image/png')).resolves.toBe('blob:extension/test');
 
@@ -79,7 +79,7 @@ describe('background offscreen client', () => {
       kind: 'bytesBegin',
       transferId: expect.any(String),
       mimeType: 'image/png',
-      totalBytes: 70_000,
+      totalBytes: 300_000,
     });
     expect(runtime.sendMessage).toHaveBeenCalledWith({
       target: 'offscreen',

@@ -445,11 +445,24 @@ describe('service-worker handler', () => {
 
     await expect(swHandler({
       kind: 'beginItemTransfer',
+      transferId: 'telegram-large-video',
+      peerId: 42,
+      item,
+      mimeType: 'video/mp4',
+      totalBytes: 700_015_062,
+    }, {})).resolves.toEqual({ ok: true, value: null });
+    await expect(swHandler({ kind: 'abortItemTransfer', transferId: 'telegram-large-video' }, {})).resolves.toEqual({
+      ok: true,
+      value: null,
+    });
+
+    await expect(swHandler({
+      kind: 'beginItemTransfer',
       transferId: 'huge',
       peerId: 42,
       item,
       mimeType: 'application/octet-stream',
-      totalBytes: 512 * 1024 * 1024 + 1,
+      totalBytes: 2 * 1024 * 1024 * 1024 + 1,
     }, {})).resolves.toEqual({ ok: false, error: 'TRANSFER_TOO_LARGE' });
 
     await expect(swHandler({
@@ -464,7 +477,7 @@ describe('service-worker handler', () => {
       kind: 'appendItemTransferChunk',
       transferId: 'chunk-too-large',
       index: 0,
-      data: 'A'.repeat(80 * 1024),
+      data: 'A'.repeat(300 * 1024),
     }, {})).resolves.toEqual({ ok: false, error: 'CHUNK_TOO_LARGE' });
     await expect(swHandler({ kind: 'recordItemFromTransfer', transferId: 'chunk-too-large' }, {})).resolves.toEqual({
       ok: false,
@@ -527,7 +540,7 @@ describe('service-worker handler', () => {
       totalBytes: 0,
     }, {})).resolves.toEqual({ ok: false, error: 'TRANSFER_EXISTS' });
 
-    vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+    vi.advanceTimersByTime(15 * 60 * 1000 + 1);
 
     await expect(swHandler({
       kind: 'beginItemTransfer',
@@ -537,6 +550,42 @@ describe('service-worker handler', () => {
       mimeType: 'text/plain',
       totalBytes: 0,
     }, {})).resolves.toEqual({ ok: true, value: null });
+  });
+
+  test('service-worker item transfers refresh TTL as large chunks arrive', async () => {
+    vi.useFakeTimers();
+    const { swHandler } = await importWorker();
+    const state = storage.newArchiveState({ peerId: 42, title: 'News', username: null });
+    storage.states.set(42, state);
+
+    await expect(swHandler({
+      kind: 'beginItemTransfer',
+      transferId: 'slow-large-transfer',
+      peerId: 42,
+      item,
+      mimeType: 'video/mp4',
+      totalBytes: 2,
+    }, {})).resolves.toEqual({ ok: true, value: null });
+
+    vi.advanceTimersByTime(14 * 60 * 1000);
+    await expect(swHandler({
+      kind: 'appendItemTransferChunk',
+      transferId: 'slow-large-transfer',
+      index: 0,
+      data: bytesToBase64(new Uint8Array([1])),
+    }, {})).resolves.toEqual({ ok: true, value: null });
+
+    vi.advanceTimersByTime(14 * 60 * 1000);
+    await expect(swHandler({
+      kind: 'appendItemTransferChunk',
+      transferId: 'slow-large-transfer',
+      index: 1,
+      data: bytesToBase64(new Uint8Array([2])),
+    }, {})).resolves.toEqual({ ok: true, value: null });
+    await expect(swHandler({ kind: 'recordItemFromTransfer', transferId: 'slow-large-transfer' }, {})).resolves.toEqual({
+      ok: true,
+      value: { filename: 'photo.jpg' },
+    });
   });
 
   test('flushPersist can persist an error status before writing the manifest', async () => {

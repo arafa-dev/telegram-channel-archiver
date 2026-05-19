@@ -1,3 +1,5 @@
+import { TRANSFER_MAX_ACTIVE, TRANSFER_MAX_BASE64_CHUNK_CHARS, TRANSFER_MAX_BYTES, TRANSFER_TTL_MS } from '../shared/transfer-limits';
+
 type OffscreenResponse<T> = { ok: true; value: T } | { ok: false; error: string };
 
 type OffscreenMessage =
@@ -15,10 +17,10 @@ type TransferState = {
   ttlTimer: ReturnType<typeof setTimeout>;
 };
 
-export const OFFSCREEN_MAX_BASE64_CHUNK_CHARS = 72 * 1024;
-export const OFFSCREEN_MAX_TRANSFER_BYTES = 512 * 1024 * 1024;
-export const OFFSCREEN_MAX_ACTIVE_TRANSFERS = 8;
-export const OFFSCREEN_TRANSFER_TTL_MS = 5 * 60 * 1000;
+export const OFFSCREEN_MAX_BASE64_CHUNK_CHARS = TRANSFER_MAX_BASE64_CHUNK_CHARS;
+export const OFFSCREEN_MAX_TRANSFER_BYTES = TRANSFER_MAX_BYTES;
+export const OFFSCREEN_MAX_ACTIVE_TRANSFERS = TRANSFER_MAX_ACTIVE;
+export const OFFSCREEN_TRANSFER_TTL_MS = TRANSFER_TTL_MS;
 
 const transfers = new Map<string, TransferState>();
 
@@ -86,6 +88,13 @@ function deleteTransfer(transferId: string): void {
   if (!transfer) return;
   clearTimeout(transfer.ttlTimer);
   transfers.delete(transferId);
+}
+
+function refreshTransferTtl(transferId: string, transfer: TransferState): void {
+  clearTimeout(transfer.ttlTimer);
+  transfer.ttlTimer = setTimeout(() => {
+    transfers.delete(transferId);
+  }, OFFSCREEN_TRANSFER_TTL_MS);
 }
 
 function createTransfer(transferId: string, mimeType: string, totalBytes: number): TransferState {
@@ -156,6 +165,7 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (respo
 
       transfer.chunks.push(chunk);
       transfer.receivedBytes += chunk.byteLength;
+      refreshTransferTtl(msg.transferId, transfer);
       sendResponse({ ok: true, value: null });
       return false;
     }

@@ -8,6 +8,7 @@ import { notify } from './notifications';
 import { installRouter, type SwHandler } from './router';
 import { newArchiveState, readArchive, writeArchive, type ArchiveState } from './storage';
 import { packSeenIds } from '../shared/seenIds';
+import { TRANSFER_MAX_ACTIVE, TRANSFER_MAX_BASE64_CHUNK_CHARS, TRANSFER_MAX_BYTES, TRANSFER_TTL_MS } from '../shared/transfer-limits';
 import type { ArchiveItem } from '../shared/types';
 
 const log = (...args: unknown[]) => console.log('[tg-archive/sw]', ...args);
@@ -28,10 +29,6 @@ const itemTransfers = new Map<
 >();
 const FLUSH_EVERY_ITEMS = 50;
 const FLUSH_EVERY_MS = 30_000;
-const ITEM_TRANSFER_MAX_BASE64_CHUNK_CHARS = 72 * 1024;
-const ITEM_TRANSFER_MAX_BYTES = 512 * 1024 * 1024;
-const ITEM_TRANSFER_MAX_ACTIVE = 8;
-const ITEM_TRANSFER_TTL_MS = 5 * 60 * 1000;
 
 type ArchiveStateDto = Omit<ArchiveState, 'seenIds'> & { seenIdsPacked: string };
 
@@ -128,6 +125,13 @@ function deleteItemTransfer(transferId: string): void {
   itemTransfers.delete(transferId);
 }
 
+function refreshItemTransferTtl(transferId: string, transfer: { ttlTimer: ReturnType<typeof setTimeout> }): void {
+  clearTimeout(transfer.ttlTimer);
+  transfer.ttlTimer = setTimeout(() => {
+    itemTransfers.delete(transferId);
+  }, TRANSFER_TTL_MS);
+}
+
 function base64ToBytes(data: string): Uint8Array {
   if (typeof Buffer !== 'undefined') return new Uint8Array(Buffer.from(data, 'base64'));
   const binary = atob(data);
@@ -194,8 +198,8 @@ export const swHandler: SwHandler = async (req, _sender) => {
 
     case 'beginItemTransfer': {
       if (itemTransfers.has(req.transferId)) return { ok: false, error: 'TRANSFER_EXISTS' };
-      if (req.totalBytes > ITEM_TRANSFER_MAX_BYTES) return { ok: false, error: 'TRANSFER_TOO_LARGE' };
-      if (itemTransfers.size >= ITEM_TRANSFER_MAX_ACTIVE) return { ok: false, error: 'TOO_MANY_TRANSFERS' };
+      if (req.totalBytes > TRANSFER_MAX_BYTES) return { ok: false, error: 'TRANSFER_TOO_LARGE' };
+      if (itemTransfers.size >= TRANSFER_MAX_ACTIVE) return { ok: false, error: 'TOO_MANY_TRANSFERS' };
       itemTransfers.set(req.transferId, {
         peerId: req.peerId,
         item: req.item,
@@ -205,7 +209,7 @@ export const swHandler: SwHandler = async (req, _sender) => {
         receivedBytes: 0,
         ttlTimer: setTimeout(() => {
           itemTransfers.delete(req.transferId);
-        }, ITEM_TRANSFER_TTL_MS),
+        }, TRANSFER_TTL_MS),
       });
       return { ok: true, value: null };
     }
@@ -213,7 +217,7 @@ export const swHandler: SwHandler = async (req, _sender) => {
     case 'appendItemTransferChunk': {
       const transfer = itemTransfers.get(req.transferId);
       if (!transfer) return { ok: false, error: 'UNKNOWN_TRANSFER' };
-      if (req.data.length > ITEM_TRANSFER_MAX_BASE64_CHUNK_CHARS) {
+      if (req.data.length > TRANSFER_MAX_BASE64_CHUNK_CHARS) {
         deleteItemTransfer(req.transferId);
         return { ok: false, error: 'CHUNK_TOO_LARGE' };
       }
@@ -224,6 +228,7 @@ export const swHandler: SwHandler = async (req, _sender) => {
       }
       transfer.chunks.set(req.index, chunk);
       transfer.receivedBytes += chunk.byteLength;
+      refreshItemTransferTtl(req.transferId, transfer);
       return { ok: true, value: null };
     }
 

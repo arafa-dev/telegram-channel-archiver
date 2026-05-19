@@ -1,7 +1,7 @@
 import type { SwRequest } from '../background/router';
+import { TRANSFER_BYTE_CHUNK_SIZE } from '../shared/transfer-limits';
 import type { ArchiveItem } from '../shared/types';
 
-const BYTE_CHUNK_SIZE = 48 * 1024;
 let nextTransferId = 1;
 
 type CallSw = <T = unknown>(req: SwRequest) => Promise<T>;
@@ -32,12 +32,12 @@ export async function recordArchiveItemViaTransfer<T>(
     });
 
     let index = 0;
-    for (let offset = 0; offset < bytes.byteLength; offset += BYTE_CHUNK_SIZE) {
+    for (let offset = 0; offset < bytes.byteLength; offset += TRANSFER_BYTE_CHUNK_SIZE) {
       await callSw({
         kind: 'appendItemTransferChunk',
         transferId,
         index,
-        data: bytesToBase64(bytes.subarray(offset, offset + BYTE_CHUNK_SIZE)),
+        data: bytesToBase64(bytes.subarray(offset, offset + TRANSFER_BYTE_CHUNK_SIZE)),
       });
       index += 1;
     }

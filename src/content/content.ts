@@ -5,6 +5,7 @@ import type { ArchiveFailure, Counts, MediaRef, PeerInfo } from '../shared/types
 import { buildArchiveRecord } from './archive-item';
 import { BridgeClient } from './bridge-client';
 import { LifecycleWatcher } from './lifecycle';
+import { mediaToken, resolveDownloadItemForAttempt } from './media-ref';
 import { DownloadPool } from './pool';
 import { finalizePageProgress } from './progress';
 import {
@@ -302,26 +303,39 @@ function enqueueDownload(
   runPool.enqueue({
     id: item.meta.messageId,
     run: async () => {
+      const downloadItem = await resolveDownloadItemForAttempt(bridge, peerId, item);
+      const mediaRef = downloadItem.mediaRef;
+      const attemptToken = mediaToken(mediaRef);
+      if (attemptToken) runTokens.add(attemptToken);
       const filename = mediaFilename({
-        dateUtc: item.meta.dateUtc,
-        messageId: item.meta.messageId,
-        kind: item.mediaRef.kind,
-        mimeType: item.mediaRef.mimeType,
+        dateUtc: downloadItem.meta.dateUtc,
+        messageId: downloadItem.meta.messageId,
+        kind: mediaRef.kind,
+        mimeType: mediaRef.mimeType,
       });
-      const result = await bridge.call<{ blob: Blob }>(
-        'downloadMedia',
-        {
-          rawMediaToken: item.mediaRef.rawMediaToken,
-          fileName: filename,
-          requestId: item.meta.messageId,
-        },
-        DOWNLOAD_CALL_TIMEOUT_MS
-      );
-      return { blob: result.blob, filename };
+      let complete = false;
+      try {
+        const result = await bridge.call<{ blob: Blob }>(
+          'downloadMedia',
+          {
+            rawMediaToken: mediaRef.rawMediaToken,
+            fileName: filename,
+            requestId: downloadItem.meta.messageId,
+          },
+          DOWNLOAD_CALL_TIMEOUT_MS
+        );
+        complete = true;
+        return { blob: result.blob, filename, item: downloadItem, mediaRef };
+      } finally {
+        if (!complete && attemptToken && attemptToken !== token) {
+          await releaseMediaRef(mediaRef);
+          runTokens.delete(attemptToken);
+        }
+      }
     },
-    onSuccess: async ({ blob, filename }) => {
+    onSuccess: async ({ blob, filename, item: downloadedItem, mediaRef }) => {
       if (!isRunActive(peerId, runId)) return;
-      const archiveRecord = await buildArchiveRecord(item.meta, item.mediaRef, filename, blob);
+      const archiveRecord = await buildArchiveRecord(downloadedItem.meta, mediaRef, filename, blob);
       if (!isRunActive(peerId, runId)) return;
       await recordArchiveItemViaTransfer(callSw, {
         peerId,
@@ -330,8 +344,8 @@ function enqueueDownload(
         mimeType: archiveRecord.mimeType,
       });
       if (!isRunActive(peerId, runId)) return;
-      await releaseMediaRef(item.mediaRef);
-      if (token) runTokens.delete(token);
+      await releaseTrackedMediaRef(mediaRef, runTokens);
+      if (mediaToken(mediaRef) !== token) await releaseTrackedMediaRef(item.mediaRef, runTokens);
       bumpBandwidth(blob.size);
       setView({ downloaded: view.downloaded + 1 });
     },
@@ -344,8 +358,7 @@ function enqueueDownload(
         lastTriedAt: new Date().toISOString(),
       };
       await callSw({ kind: 'recordFailure', peerId, failure });
-      await releaseMediaRef(item.mediaRef);
-      if (token) runTokens.delete(token);
+      await releaseTrackedMediaRef(item.mediaRef, runTokens);
       if (isRunActive(peerId, runId)) setView({ failed: view.failed + 1 });
     },
   });
@@ -426,14 +439,16 @@ function disconnectPort(port: chrome.runtime.Port): void {
   }
 }
 
-function mediaToken(mediaRef: MediaRef): string | null {
-  return typeof mediaRef.rawMediaToken === 'string' ? mediaRef.rawMediaToken : null;
-}
-
 async function releaseMediaRef(mediaRef: MediaRef): Promise<void> {
   const token = mediaToken(mediaRef);
   if (!token) return;
   await bridge.call('releaseMediaToken', { rawMediaToken: token }).catch(() => undefined);
+}
+
+async function releaseTrackedMediaRef(mediaRef: MediaRef, tokens: Set<string>): Promise<void> {
+  const token = mediaToken(mediaRef);
+  await releaseMediaRef(mediaRef);
+  if (token) tokens.delete(token);
 }
 
 async function releaseMediaRefs(mediaRefs: MediaRef[]): Promise<void> {

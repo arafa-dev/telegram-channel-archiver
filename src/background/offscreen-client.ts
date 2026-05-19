@@ -1,8 +1,9 @@
+import { TRANSFER_BYTE_CHUNK_SIZE } from '../shared/transfer-limits';
+
 type OffscreenResponse<T> = { ok: true; value: T } | { ok: false; error: string };
 
 const OFFSCREEN_URL = 'offscreen/offscreen.html';
 const OFFSCREEN_JUSTIFICATION = 'Hold Blob URLs alive for chrome.downloads';
-const BYTE_CHUNK_SIZE = 48 * 1024;
 
 let creating: Promise<void> | null = null;
 
@@ -69,14 +70,14 @@ export async function bytesToObjectUrl(bytes: ArrayBuffer, mimeType: string): Pr
       'OFFSCREEN_BEGIN_FAILED'
     );
 
-    for (let offset = 0, index = 0; offset < view.byteLength; offset += BYTE_CHUNK_SIZE, index += 1) {
+    for (let offset = 0, index = 0; offset < view.byteLength; offset += TRANSFER_BYTE_CHUNK_SIZE, index += 1) {
       await sendOffscreen<null>(
         {
           target: 'offscreen',
           kind: 'bytesChunk',
           transferId: id,
           index,
-          data: bytesToBase64(view.subarray(offset, offset + BYTE_CHUNK_SIZE)),
+          data: bytesToBase64(view.subarray(offset, offset + TRANSFER_BYTE_CHUNK_SIZE)),
         },
         'OFFSCREEN_CHUNK_FAILED'
       );
