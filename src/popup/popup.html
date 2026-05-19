@@ -4,9 +4,22 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Telegram Channel Archiver</title>
-    <link rel="stylesheet" href="./popup.css">
+    <link rel="stylesheet" href="popup.css">
   </head>
   <body>
-    <script type="module" src="./popup.js"></script>
+    <h1>Telegram Channel Archiver</h1>
+    <p class="muted">
+      Open a channel on
+      <a href="https://web.telegram.org/k/" target="_blank" rel="noreferrer">web.telegram.org/k/</a>
+      and use the in-page panel.
+    </p>
+    <details>
+      <summary>Advanced</summary>
+      <label>
+        Concurrency
+        <input type="number" min="1" max="6" id="concurrency">
+      </label>
+    </details>
+    <script type="module" src="popup.js"></script>
   </body>
 </html>

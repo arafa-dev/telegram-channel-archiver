@@ -1,3 +1,31 @@
 body {
   margin: 0;
+  padding: 14px;
+  width: 280px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+h1 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
+.muted {
+  margin: 0 0 12px;
+  color: #666;
+  font-size: 12px;
+}
+
+details {
+  margin-top: 10px;
+}
+
+label {
+  display: block;
+  margin: 6px 0;
+  font-size: 13px;
+}
+
+input[type="number"] {
+  width: 60px;
 }

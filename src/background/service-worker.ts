@@ -1,4 +1,5 @@
 import { installKeepalive } from './keepalive';
+import { registerBridge } from './install';
 import { downloadBlob } from './downloads';
 import { appendFailure, readFailures } from './idb';
 import { writeManifest } from './manifest-writer';
@@ -261,4 +262,10 @@ export const swHandler: SwHandler = async (req, _sender) => {
 
 installKeepalive();
 installRouter(swHandler);
+chrome.runtime.onInstalled.addListener(() => {
+  registerBridge().catch(console.error);
+});
+chrome.runtime.onStartup.addListener(() => {
+  registerBridge().catch(console.error);
+});
 log('service worker booted');

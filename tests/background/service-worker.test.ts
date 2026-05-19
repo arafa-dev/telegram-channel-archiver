@@ -58,6 +58,9 @@ const idb = vi.hoisted(() => {
     readFailures: vi.fn(async (peerId: number) => failures.get(peerId) ?? []),
   };
 });
+const install = vi.hoisted(() => ({
+  registerBridge: vi.fn(async () => undefined),
+}));
 
 vi.mock('../../src/background/storage', () => storage);
 vi.mock('../../src/background/downloads', () => downloads);
@@ -65,6 +68,7 @@ vi.mock('../../src/background/manifest-writer', () => manifest);
 vi.mock('../../src/background/ndjson-writer', () => ndjson);
 vi.mock('../../src/background/notifications', () => notifications);
 vi.mock('../../src/background/idb', () => idb);
+vi.mock('../../src/background/install', () => install);
 
 const item: ArchiveItem = {
   messageId: 100,
@@ -82,14 +86,19 @@ const item: ArchiveItem = {
 };
 
 async function importWorker() {
+  const onInstalled = { addListener: vi.fn() };
+  const onStartup = { addListener: vi.fn() };
   vi.stubGlobal('chrome', {
     runtime: {
       onConnect: { addListener: vi.fn() },
       onMessage: { addListener: vi.fn() },
+      onInstalled,
+      onStartup,
     },
   });
   vi.resetModules();
-  return import('../../src/background/service-worker');
+  const worker = await import('../../src/background/service-worker');
+  return { ...worker, onInstalled, onStartup };
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -120,6 +129,20 @@ describe('service-worker handler', () => {
     storage.states.clear();
     ndjson.rows.length = 0;
     idb.failures.clear();
+    install.registerBridge.mockClear();
+  });
+
+  test('registers the MAIN-world bridge on install and startup events', async () => {
+    const { onInstalled, onStartup } = await importWorker();
+    const installedListener = onInstalled.addListener.mock.calls[0]?.[0];
+    const startupListener = onStartup.addListener.mock.calls[0]?.[0];
+
+    expect(installedListener).toBeTypeOf('function');
+    expect(startupListener).toBeTypeOf('function');
+
+    installedListener();
+    startupListener();
+    await vi.waitFor(() => expect(install.registerBridge).toHaveBeenCalledTimes(2));
   });
 
   test('init creates archive state and returns a JSON-safe DTO', async () => {

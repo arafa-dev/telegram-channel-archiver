@@ -1,4 +1,5 @@
 import { mediaFilename } from '../shared/filename';
+import { clampConcurrency } from '../shared/concurrency';
 import { pickPhotoSize, pickVideoVariant } from '../shared/quality';
 import { unpackSeenIds } from '../shared/seenIds';
 import type { ArchiveFailure, ArchiveItem, Counts, MediaRef, MessageMeta, PeerInfo } from '../shared/types';
@@ -14,7 +15,6 @@ import { Panel, type PanelView } from './ui/panel';
 import { walkPage, type WalkItem } from './walker';
 
 const PAGE_LIMIT = 100;
-const CONCURRENCY = 3;
 
 type ArchiveStateDto = {
   peerId: number;
@@ -78,6 +78,11 @@ async function refreshPeer(): Promise<PeerInfo | null> {
   return peer;
 }
 
+async function readConcurrency(): Promise<number> {
+  const { concurrency } = await chrome.storage.local.get('concurrency').catch(() => ({ concurrency: undefined }));
+  return clampConcurrency(concurrency);
+}
+
 async function onStart(): Promise<void> {
   if (view.status === 'paused') {
     onResume();
@@ -109,7 +114,7 @@ async function onStart(): Promise<void> {
   });
 
   const runKeepalivePort = openKeepalivePort();
-  const runPool = new DownloadPool(CONCURRENCY);
+  const runPool = new DownloadPool(await readConcurrency());
   const runTokens = new Set<string>();
   keepalivePort = runKeepalivePort;
   pool = runPool;
