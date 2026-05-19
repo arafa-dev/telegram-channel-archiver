@@ -1,8 +1,8 @@
 import { mediaFilename } from '../shared/filename';
 import { clampConcurrency } from '../shared/concurrency';
-import { pickPhotoSize, pickVideoVariant } from '../shared/quality';
 import { unpackSeenIds } from '../shared/seenIds';
-import type { ArchiveFailure, ArchiveItem, Counts, MediaRef, MessageMeta, PeerInfo } from '../shared/types';
+import type { ArchiveFailure, Counts, MediaRef, PeerInfo } from '../shared/types';
+import { buildArchiveRecord } from './archive-item';
 import { BridgeClient } from './bridge-client';
 import { LifecycleWatcher } from './lifecycle';
 import { DownloadPool } from './pool';
@@ -243,13 +243,13 @@ function enqueueDownload(
     },
     onSuccess: async ({ blob, filename }) => {
       if (!isRunActive(peerId, runId)) return;
-      const archiveItem = await buildArchiveItem(item.meta, item.mediaRef, filename, blob);
+      const archiveRecord = await buildArchiveRecord(item.meta, item.mediaRef, filename, blob);
       if (!isRunActive(peerId, runId)) return;
       await recordArchiveItemViaTransfer(callSw, {
         peerId,
-        item: archiveItem,
+        item: archiveRecord.item,
         blob,
-        mimeType: blob.type || item.mediaRef.mimeType,
+        mimeType: archiveRecord.mimeType,
       });
       if (!isRunActive(peerId, runId)) return;
       await releaseMediaRef(item.mediaRef);
@@ -271,27 +271,6 @@ function enqueueDownload(
       if (isRunActive(peerId, runId)) setView({ failed: view.failed + 1 });
     },
   });
-}
-
-async function buildArchiveItem(meta: MessageMeta, mediaRef: MediaRef, filename: string, blob: Blob): Promise<ArchiveItem> {
-  return {
-    ...meta,
-    kind: mediaRef.kind,
-    filename,
-    mimeType: blob.type || mediaRef.mimeType,
-    byteSize: blob.size,
-    qualityTier: qualityTier(mediaRef),
-    downloadedAt: new Date().toISOString(),
-  };
-}
-
-function qualityTier(mediaRef: MediaRef): string {
-  if (mediaRef.kind === 'photo') return pickPhotoSize(mediaRef.photoSizes ?? [])?.type ?? 'photo';
-
-  const variant = pickVideoVariant(mediaRef.videoVariants ?? []);
-  if (!variant) return 'video';
-  const size = variant.width > 0 && variant.height > 0 ? `${variant.width}x${variant.height}` : 'unknown';
-  return `video:${size}`;
 }
 
 function onPause(): void {
