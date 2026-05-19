@@ -7,17 +7,6 @@ export async function registerBridge(): Promise<void> {
       await chrome.scripting.unregisterContentScripts({ ids: [SCRIPT_ID] });
     }
   } catch {
-    // Ignore stale or unavailable registrations; registration below is the source of truth.
+    // Ignore stale or unavailable dynamic registrations; the manifest content script is the source of truth.
   }
-
-  await chrome.scripting.registerContentScripts([
-    {
-      id: SCRIPT_ID,
-      js: ['bridge/bridge.js'],
-      matches: ['https://web.telegram.org/k/*'],
-      runAt: 'document_start',
-      world: 'MAIN',
-      persistAcrossSessions: true,
-    },
-  ]);
 }

@@ -24,6 +24,28 @@ describe('content progress policy', () => {
     expect(result.sawSeenDownloadable).toBe(true);
   });
 
+  test('resumes partial archives without treating seen downloadable media as catch-up boundary', async () => {
+    const { partitionPageItemsForResume } = await import('../../src/content/progress-policy');
+    const items = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }];
+
+    const result = partitionPageItemsForResume(items, (item) => item.id === 2 || item.id === 4);
+
+    expect(result.freshCandidates).toEqual(items);
+    expect(result.releasableItems).toEqual([{ id: 2 }, { id: 4 }]);
+    expect(result.sawSeenDownloadable).toBe(false);
+  });
+
+  test('uses catch-up mode only after a completed archive', async () => {
+    const { shouldUseCatchupMode } = await import('../../src/content/progress-policy');
+
+    expect(shouldUseCatchupMode('completed', 0)).toBe(true);
+    expect(shouldUseCatchupMode('completed', 1)).toBe(false);
+    expect(shouldUseCatchupMode('error', 0)).toBe(false);
+    expect(shouldUseCatchupMode('paused', 0)).toBe(false);
+    expect(shouldUseCatchupMode('in_progress', 0)).toBe(false);
+    expect(shouldUseCatchupMode(undefined, 0)).toBe(false);
+  });
+
   test('classifies failure-blocked page stop as not complete', async () => {
     const { classifyPageStop } = await import('../../src/content/progress-policy');
 

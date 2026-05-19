@@ -7,6 +7,8 @@ export type SwRequest =
   | { kind: 'recordItemFromTransfer'; transferId: string }
   | { kind: 'abortItemTransfer'; transferId: string }
   | { kind: 'recordFailure'; peerId: number; failure: import('../shared/types').ArchiveFailure }
+  | { kind: 'getFailures'; peerId: number }
+  | { kind: 'clearFailure'; peerId: number; messageId: number }
   | { kind: 'flushPersist'; peerId: number; status?: import('../shared/types').ArchiveStatus }
   | { kind: 'complete'; peerId: number }
   | { kind: 'heartbeat' }

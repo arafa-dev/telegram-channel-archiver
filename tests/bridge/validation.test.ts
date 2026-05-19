@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { parseDownloadMediaArgs, parseExtractMediaRefArgs, parseGetHistoryArgs } from '../../src/bridge/validation';
+import {
+  parseDownloadMediaArgs,
+  parseExtractMediaRefArgs,
+  parseGetHistoryArgs,
+  parseGetMessageByIdArgs,
+} from '../../src/bridge/validation';
 
 describe('bridge argument validation', () => {
   it('accepts bounded getHistory arguments', () => {
@@ -16,6 +21,13 @@ describe('bridge argument validation', () => {
     expect(() => parseGetHistoryArgs({ peerId: 1, offsetId: 0.5, limit: 10 })).toThrow('INVALID_ARGS');
     expect(() => parseGetHistoryArgs({ peerId: 1, offsetId: -1, limit: 10 })).toThrow('INVALID_ARGS');
     expect(() => parseGetHistoryArgs({ peerId: 1, offsetId: 0, limit: 201 })).toThrow('INVALID_ARGS');
+  });
+
+  it('validates getMessageById arguments', () => {
+    expect(parseGetMessageByIdArgs({ peerId: -100, messageId: 123 })).toEqual({ peerId: -100, messageId: 123 });
+    expect(() => parseGetMessageByIdArgs({ peerId: -100, messageId: 0 })).toThrow('INVALID_ARGS');
+    expect(() => parseGetMessageByIdArgs({ peerId: -100, messageId: 1.5 })).toThrow('INVALID_ARGS');
+    expect(() => parseGetMessageByIdArgs({ peerId: Number.NaN, messageId: 1 })).toThrow('INVALID_ARGS');
   });
 
   it('validates extractMediaRef arguments', () => {

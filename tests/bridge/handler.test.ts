@@ -8,9 +8,9 @@ function req(args: unknown): ReqEnvelope {
   return { source: 'tg-archive', kind: 'req', id: 1, op: 'downloadMedia', args };
 }
 
-function handles(appDownloadManager: unknown): TelegramHandles {
+function handles(appDownloadManager: unknown, appMessagesManager: unknown = { getHistory: () => undefined }): TelegramHandles {
   return {
-    appMessagesManager: { getHistory: () => undefined },
+    appMessagesManager,
     appDownloadManager,
     appImManager: {},
     appPeersManager: { getPeer: () => undefined },
@@ -50,7 +50,7 @@ describe('handleBridgeReq downloadMedia token lifecycle', () => {
       )
     ).resolves.toEqual({ blob });
 
-    expect(resolveMediaToken(token)).toBe(media);
+    expect(resolveMediaToken(token)).toBe(media.photo);
   });
 
   it('releases the media token only through the explicit release op', async () => {
@@ -66,5 +66,39 @@ describe('handleBridgeReq downloadMedia token lifecycle', () => {
     ).resolves.toEqual({ released: true });
 
     expect(() => resolveMediaToken(token)).toThrow('UNKNOWN_MEDIA_TOKEN');
+  });
+
+  it('extracts a retriable media ref by visible message id', async () => {
+    const appMessagesManager = {
+      getHistory: vi.fn(),
+      getMessageByPeer: vi.fn((_peerId: number, packedId: number) =>
+        packedId === 4_294_967_296 + 7847
+          ? {
+              id: 7847,
+              date: 1_700_000_000,
+              media: {
+                _: 'messageMediaDocument',
+                document: {
+                  _: 'document',
+                  mime_type: 'video/mp4',
+                  size: 3,
+                  attributes: [{ _: 'documentAttributeVideo', duration: 1, w: 10, h: 20 }],
+                },
+              },
+            }
+          : null
+      ),
+    };
+
+    const result = await handleBridgeReq(
+      { source: 'tg-archive', kind: 'req', id: 3, op: 'getMessageById', args: { peerId: -1, messageId: 7847 } },
+      handles({ download: vi.fn() }, appMessagesManager),
+      vi.fn()
+    );
+
+    expect(result).toEqual(expect.objectContaining({
+      meta: expect.objectContaining({ messageId: 7847 }),
+      mediaRef: expect.objectContaining({ kind: 'video', mimeType: 'video/mp4' }),
+    }));
   });
 });

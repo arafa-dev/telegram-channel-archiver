@@ -77,7 +77,15 @@ describe('parseEnvelope', () => {
   });
 
   it('parses all valid envelope kinds', () => {
-    const ops: BridgeOp[] = ['ping', 'getCurrentPeer', 'getHistory', 'extractMediaRef', 'downloadMedia', 'releaseMediaToken'];
+    const ops: BridgeOp[] = [
+      'ping',
+      'getCurrentPeer',
+      'getHistory',
+      'getMessageById',
+      'extractMediaRef',
+      'downloadMedia',
+      'releaseMediaToken',
+    ];
     const events: BridgeEvent[] = ['downloadProgress', 'bridgeReady'];
 
     for (const op of ops) {

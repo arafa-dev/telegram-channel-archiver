@@ -30,14 +30,14 @@ describe('extractMessage', () => {
         rawMediaToken: expect.any(String),
       },
     });
-    expect(resolveMediaToken(normalized.mediaRef?.rawMediaToken)).toBe(media);
+    expect(resolveMediaToken(normalized.mediaRef?.rawMediaToken)).toBe(media.photo);
   });
 
   it('deletes released media tokens and resolves released tokens with a clear error', () => {
     const media = { _: 'messageMediaPhoto', photo: { sizes: [] } };
     const token = extractMediaRef(media)?.rawMediaToken;
 
-    expect(resolveMediaToken(token)).toBe(media);
+    expect(resolveMediaToken(token)).toBe(media.photo);
     expect(releaseMediaToken(token)).toBe(true);
     expect(() => resolveMediaToken(token)).toThrow('UNKNOWN_MEDIA_TOKEN');
     expect(releaseMediaToken(token)).toBe(false);
@@ -101,7 +101,7 @@ describe('extractMediaRef', () => {
       ],
       rawMediaToken: expect.any(String),
     });
-    expect(resolveMediaToken(extracted?.rawMediaToken)).toBe(media);
+    expect(resolveMediaToken(extracted?.rawMediaToken)).toBe(media.document);
   });
 
   it('skips non-media documents', () => {

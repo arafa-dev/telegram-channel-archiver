@@ -258,6 +258,20 @@ export const swHandler: SwHandler = async (req, _sender) => {
       });
     }
 
+    case 'getFailures':
+      return { ok: true, value: await readFailures(req.peerId) };
+
+    case 'clearFailure':
+      return withPeerQueue(req.peerId, async () => {
+        const removedFailures = await removeFailuresByMessageId(req.peerId, req.messageId);
+        const state = await readArchive(req.peerId);
+        if (state && removedFailures > 0) {
+          state.counts.failed = Math.max(0, state.counts.failed - removedFailures);
+          await writeArchive(state);
+        }
+        return { ok: true, value: { removed: removedFailures } };
+      });
+
     case 'flushPersist':
       return withPeerQueue(req.peerId, async () => {
         if (req.status) {
@@ -278,11 +292,15 @@ export const swHandler: SwHandler = async (req, _sender) => {
         state.status = 'completed';
         await writeArchive(state);
         await maybeFlush(req.peerId, true);
-        await notify(
-          `done-${req.peerId}`,
-          'Archive complete',
-          `${state.title}: ${state.counts.downloaded} downloaded, ${state.counts.failed} failed.`
-        );
+        await Promise.resolve(
+          notify(
+            `done-${req.peerId}`,
+            'Archive complete',
+            `${state.title}: ${state.counts.downloaded} downloaded, ${state.counts.failed} failed.`
+          )
+        ).catch((e: unknown) => {
+          log('notification failed', e instanceof Error ? e.message : String(e));
+        });
         return { ok: true, value: null };
       });
     }

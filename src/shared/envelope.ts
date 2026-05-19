@@ -1,6 +1,13 @@
 export const SOURCE = 'tg-archive' as const;
 
-export type BridgeOp = 'ping' | 'getCurrentPeer' | 'getHistory' | 'extractMediaRef' | 'downloadMedia' | 'releaseMediaToken';
+export type BridgeOp =
+  | 'ping'
+  | 'getCurrentPeer'
+  | 'getHistory'
+  | 'getMessageById'
+  | 'extractMediaRef'
+  | 'downloadMedia'
+  | 'releaseMediaToken';
 
 export type BridgeEvent = 'downloadProgress' | 'bridgeReady';
 
@@ -34,6 +41,7 @@ const BRIDGE_OPS = new Set<BridgeOp>([
   'ping',
   'getCurrentPeer',
   'getHistory',
+  'getMessageById',
   'extractMediaRef',
   'downloadMedia',
   'releaseMediaToken',

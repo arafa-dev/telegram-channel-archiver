@@ -14,6 +14,8 @@ type Pending = {
 type EventListener = (payload: unknown) => void;
 type ReadyResolver = { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
 
+const DEFAULT_READY_TIMEOUT_MS = 120_000;
+
 export interface BridgeClientOptions {
   callTimeoutMs?: number;
   windowRef?: Window;
@@ -36,8 +38,8 @@ export class BridgeClient {
     this.windowRef.addEventListener('message', (ev) => this.onMessage(ev));
   }
 
-  call<T = unknown>(op: BridgeOp, args?: unknown): Promise<T> {
-    return this.createRequest<T>(op, args, this.callTimeoutMs).promise;
+  call<T = unknown>(op: BridgeOp, args?: unknown, timeoutMs = this.callTimeoutMs): Promise<T> {
+    return this.createRequest<T>(op, args, timeoutMs).promise;
   }
 
   private createRequest<T = unknown>(
@@ -85,7 +87,7 @@ export class BridgeClient {
     this.listeners.get(evt)?.delete(fn);
   }
 
-  ready(timeoutMs = 30_000): Promise<void> {
+  ready(timeoutMs = DEFAULT_READY_TIMEOUT_MS): Promise<void> {
     if (this.isReady) return Promise.resolve();
 
     return new Promise((resolve, reject) => {

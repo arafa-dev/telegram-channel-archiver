@@ -56,6 +56,23 @@ describe('BridgeClient', () => {
     await timedOut;
   });
 
+  test('default ready timeout tolerates slow Telegram Web K startup', async () => {
+    const { BridgeClient } = await import('../../src/content/bridge-client');
+    const bridge = new BridgeClient();
+
+    const ready = bridge.ready();
+    let rejected: unknown;
+    ready.catch((e) => {
+      rejected = e;
+    });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(rejected).toBeUndefined();
+
+    dispatch(encodeEvt('bridgeReady'));
+    await expect(ready).resolves.toBeUndefined();
+  });
+
   test('ready resolves from ping when bridgeReady fired before client construction', async () => {
     dispatch(encodeEvt('bridgeReady'));
     const { BridgeClient } = await import('../../src/content/bridge-client');
@@ -126,5 +143,18 @@ describe('BridgeClient', () => {
     const secondReq = posted[1] as ReqEnvelope;
     dispatch(encodeRes(secondReq.id, true, { ok: true }));
     await expect(second).resolves.toEqual({ ok: true });
+  });
+
+  test('allows a longer timeout for individual slow calls', async () => {
+    const { BridgeClient } = await import('../../src/content/bridge-client');
+    const bridge = new BridgeClient({ callTimeoutMs: 100 });
+
+    const pending = bridge.call('downloadMedia', { rawMediaToken: 'media:1' }, 1_000);
+    const req = posted[0] as ReqEnvelope;
+
+    await vi.advanceTimersByTimeAsync(100);
+    dispatch(encodeRes(req.id, true, { blob: 'ok' }));
+
+    await expect(pending).resolves.toEqual({ blob: 'ok' });
   });
 });

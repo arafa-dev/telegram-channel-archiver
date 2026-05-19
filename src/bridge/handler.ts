@@ -1,11 +1,17 @@
 import type { ReqEnvelope } from '../shared/envelope';
 import { encodeEvt } from '../shared/envelope';
 import { downloadMedia } from './download';
-import { getHistory } from './history';
+import { getHistory, getMessageById } from './history';
 import { extractMessage, releaseMediaToken, resolveMediaToken } from './media';
 import { getCurrentPeer } from './peer';
 import type { TelegramHandles } from './resolve';
-import { parseDownloadMediaArgs, parseExtractMediaRefArgs, parseGetHistoryArgs, parseReleaseMediaTokenArgs } from './validation';
+import {
+  parseDownloadMediaArgs,
+  parseExtractMediaRefArgs,
+  parseGetHistoryArgs,
+  parseGetMessageByIdArgs,
+  parseReleaseMediaTokenArgs,
+} from './validation';
 
 export type BridgePostMessage = (message: unknown, targetOrigin: string) => void;
 
@@ -28,6 +34,12 @@ export async function handleBridgeReq(
         messages: page.messages.map((m) => extractMessage(m)),
         nextOffsetId: page.nextOffsetId,
       };
+    }
+
+    case 'getMessageById': {
+      const args = parseGetMessageByIdArgs(req.args);
+      const message = await getMessageById(handles, args.peerId, args.messageId);
+      return message ? extractMessage(message) : null;
     }
 
     case 'extractMediaRef': {

@@ -32,6 +32,21 @@ export function partitionPageItemsForCatchup<T>(
   };
 }
 
+export function partitionPageItemsForResume<T>(
+  items: T[],
+  isSeenDownloadable: (item: T) => boolean
+): { freshCandidates: T[]; releasableItems: T[]; sawSeenDownloadable: boolean } {
+  return {
+    freshCandidates: items,
+    releasableItems: items.filter((item) => isSeenDownloadable(item)),
+    sawSeenDownloadable: false,
+  };
+}
+
+export function shouldUseCatchupMode(previousStatus: string | null | undefined, failedCount: number): boolean {
+  return previousStatus === 'completed' && failedCount === 0;
+}
+
 export type PageStopReason = 'continue' | 'tail' | 'catchup' | 'failure' | 'interrupted';
 
 export function classifyPageStop(input: {

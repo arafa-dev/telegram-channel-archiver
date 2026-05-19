@@ -6,7 +6,7 @@ describe('registerBridge', () => {
     vi.unstubAllGlobals();
   });
 
-  test('replaces an existing MAIN-world bridge registration', async () => {
+  test('removes an existing dynamic MAIN-world bridge registration', async () => {
     const scripting = {
       getRegisteredContentScripts: vi.fn(async () => [{ id: 'tg-archive-bridge' }]),
       unregisterContentScripts: vi.fn(async () => undefined),
@@ -20,19 +20,10 @@ describe('registerBridge', () => {
 
     expect(scripting.getRegisteredContentScripts).toHaveBeenCalledWith({ ids: ['tg-archive-bridge'] });
     expect(scripting.unregisterContentScripts).toHaveBeenCalledWith({ ids: ['tg-archive-bridge'] });
-    expect(scripting.registerContentScripts).toHaveBeenCalledWith([
-      {
-        id: 'tg-archive-bridge',
-        js: ['bridge/bridge.js'],
-        matches: ['https://web.telegram.org/k/*'],
-        runAt: 'document_start',
-        world: 'MAIN',
-        persistAcrossSessions: true,
-      },
-    ]);
+    expect(scripting.registerContentScripts).not.toHaveBeenCalled();
   });
 
-  test('still registers when checking existing scripts fails', async () => {
+  test('ignores failures when checking existing dynamic registrations', async () => {
     const scripting = {
       getRegisteredContentScripts: vi.fn(async () => {
         throw new Error('unavailable');
@@ -47,6 +38,6 @@ describe('registerBridge', () => {
     await registerBridge();
 
     expect(scripting.unregisterContentScripts).not.toHaveBeenCalled();
-    expect(scripting.registerContentScripts).toHaveBeenCalledTimes(1);
+    expect(scripting.registerContentScripts).not.toHaveBeenCalled();
   });
 });

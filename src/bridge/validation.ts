@@ -4,6 +4,11 @@ export interface GetHistoryArgs {
   limit: number;
 }
 
+export interface GetMessageByIdArgs {
+  peerId: number;
+  messageId: number;
+}
+
 export interface ExtractMediaRefArgs {
   message: any;
 }
@@ -36,6 +41,23 @@ export function parseGetHistoryArgs(args: unknown): GetHistoryArgs {
   }
 
   return { peerId, offsetId, limit };
+}
+
+export function parseGetMessageByIdArgs(args: unknown): GetMessageByIdArgs {
+  if (!isRecord(args)) throwInvalidArgs();
+  const { peerId, messageId } = args;
+
+  if (
+    !Number.isFinite(peerId) ||
+    !Number.isInteger(peerId) ||
+    !Number.isFinite(messageId) ||
+    !Number.isInteger(messageId) ||
+    messageId < 1
+  ) {
+    throwInvalidArgs();
+  }
+
+  return { peerId, messageId };
 }
 
 export function parseExtractMediaRefArgs(args: unknown): ExtractMediaRefArgs {

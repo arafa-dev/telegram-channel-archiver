@@ -2,10 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { downloadMedia } from '../../src/bridge/download';
 import type { TelegramHandles } from '../../src/bridge/resolve';
 
-function handles(appDownloadManager: unknown): TelegramHandles {
+function handles(appDownloadManager: unknown, apiFileManager?: unknown): TelegramHandles {
   return {
     appMessagesManager: {},
     appDownloadManager,
+    apiFileManager,
     appImManager: {},
     appPeersManager: {},
   };
@@ -49,18 +50,64 @@ describe('downloadMedia direct download path', () => {
     await expect(bytes(blob)).resolves.toEqual([1, 2]);
   });
 
+  it('uses apiFileManager.downloadMedia for documents before appDownloadManager fallbacks', async () => {
+    const blob = new Blob(['document'], { type: 'video/mp4' });
+    const adm = { download: vi.fn(), downloadToDisc: vi.fn() };
+    const apiFileManager = { downloadMedia: vi.fn().mockResolvedValue(blob) };
+
+    await expect(
+      downloadMedia(handles(adm, apiFileManager), { _: 'document', file_reference: new Uint8Array([1]) }, 'a.mp4')
+    ).resolves.toBe(blob);
+
+    expect(apiFileManager.downloadMedia).toHaveBeenCalledWith({
+      media: { _: 'document', file_reference: new Uint8Array([1]) },
+      fileName: 'a.mp4',
+    });
+    expect(adm.download).not.toHaveBeenCalled();
+    expect(adm.downloadToDisc).not.toHaveBeenCalled();
+  });
+
+  it('does not send photos through apiFileManager.downloadMedia', async () => {
+    const blob = new Blob(['photo'], { type: 'image/jpeg' });
+    const adm = { download: vi.fn().mockResolvedValue(blob) };
+    const apiFileManager = { downloadMedia: vi.fn().mockRejectedValue(new Error('photo unsupported')) };
+
+    await expect(downloadMedia(handles(adm, apiFileManager), { _: 'photo' }, 'a.jpg')).resolves.toBe(blob);
+
+    expect(apiFileManager.downloadMedia).not.toHaveBeenCalled();
+    expect(adm.download).toHaveBeenCalledOnce();
+  });
+
   it('falls back to downloadToDisc after download failure', async () => {
     const fallbackBlob = new Blob(['fallback']);
     const adm = {
       download: vi.fn().mockRejectedValue(new Error('download failed')),
-      downloadToDisc: vi.fn(() => {
-        URL.createObjectURL(fallbackBlob);
-      }),
+      downloadToDisc: vi.fn().mockResolvedValue(fallbackBlob),
     };
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     await expect(downloadMedia(handles(adm), {}, 'a.jpg')).resolves.toBe(fallbackBlob);
-    expect(adm.downloadToDisc).toHaveBeenCalledOnce();
+    expect(adm.download).toHaveBeenCalledOnce();
+    expect(adm.downloadToDisc).toHaveBeenCalledWith({ media: {}, fileName: 'a.jpg' }, true);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('falls back to downloadToDisc when download never settles', async () => {
+    vi.useFakeTimers();
+    const fallbackBlob = new Blob(['fallback']);
+    const adm = {
+      download: vi.fn(() => new Promise(() => undefined)),
+      downloadToDisc: vi.fn().mockResolvedValue(fallbackBlob),
+    };
+
+    const promise = downloadMedia(handles(adm), {}, 'a.jpg');
+    await Promise.resolve();
+    expect(adm.downloadToDisc).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    await expect(promise).resolves.toBe(fallbackBlob);
+    expect(adm.downloadToDisc).toHaveBeenCalledWith({ media: {}, fileName: 'a.jpg' }, true);
   });
 });
 
@@ -70,8 +117,7 @@ describe('downloadMedia fallback path', () => {
     vi.restoreAllMocks();
   });
 
-  it('serializes concurrent fallback downloads so URL.createObjectURL patches do not overlap', async () => {
-    const origCreate = URL.createObjectURL;
+  it('serializes concurrent fallback downloads without invoking Telegram disk writes', async () => {
     const firstBlob = new Blob(['first']);
     const secondBlob = new Blob(['second']);
     const starts: string[] = [];
@@ -79,10 +125,9 @@ describe('downloadMedia fallback path', () => {
     const adm = {
       downloadToDisc: vi.fn(({ fileName }: { fileName: string }) => {
         starts.push(fileName);
-        return new Promise<void>((resolve) => {
+        return new Promise<Blob>((resolve) => {
           resolvers.push(() => {
-            URL.createObjectURL(fileName === 'first.jpg' ? firstBlob : secondBlob);
-            resolve();
+            resolve(fileName === 'first.jpg' ? firstBlob : secondBlob);
           });
         });
       }),
@@ -99,12 +144,11 @@ describe('downloadMedia fallback path', () => {
     expect(starts).toEqual(['first.jpg', 'second.jpg']);
     resolvers[1]?.();
     await expect(second).resolves.toBe(secondBlob);
-    expect(URL.createObjectURL).toBe(origCreate);
+    expect(adm.downloadToDisc).toHaveBeenNthCalledWith(1, { media: {}, fileName: 'first.jpg' }, true);
+    expect(adm.downloadToDisc).toHaveBeenNthCalledWith(2, { media: {}, fileName: 'second.jpg' }, true);
   });
 
-  it('restores URL.createObjectURL when downloadToDisc throws', async () => {
-    const origCreate = URL.createObjectURL;
-
+  it('rejects when downloadToDisc throws', async () => {
     await expect(
       downloadMedia(
         handles({
@@ -116,12 +160,9 @@ describe('downloadMedia fallback path', () => {
         'a.jpg'
       )
     ).rejects.toThrow('disc failed');
-    expect(URL.createObjectURL).toBe(origCreate);
   });
 
-  it('restores URL.createObjectURL when downloadToDisc rejects', async () => {
-    const origCreate = URL.createObjectURL;
-
+  it('rejects when downloadToDisc rejects', async () => {
     await expect(
       downloadMedia(
         handles({
@@ -131,18 +172,21 @@ describe('downloadMedia fallback path', () => {
         'a.jpg'
       )
     ).rejects.toThrow('disc rejected');
-    expect(URL.createObjectURL).toBe(origCreate);
   });
 
-  it('restores URL.createObjectURL when fallback times out', async () => {
+  it('times out when fallback never settles', async () => {
     vi.useFakeTimers();
-    const origCreate = URL.createObjectURL;
     const promise = downloadMedia(handles({ downloadToDisc: vi.fn(() => new Promise(() => undefined)) }), {}, 'a.jpg');
     const expectation = expect(promise).rejects.toThrow('DOWNLOAD_TIMEOUT');
 
     await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
 
     await expectation;
-    expect(URL.createObjectURL).toBe(origCreate);
+  });
+
+  it('rejects when Telegram returns no Blob-like value', async () => {
+    await expect(
+      downloadMedia(handles({ downloadToDisc: vi.fn().mockResolvedValue(undefined) }), {}, 'a.jpg')
+    ).rejects.toThrow('DOWNLOAD_EMPTY');
   });
 });

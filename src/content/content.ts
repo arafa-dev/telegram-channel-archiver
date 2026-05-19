@@ -7,7 +7,13 @@ import { BridgeClient } from './bridge-client';
 import { LifecycleWatcher } from './lifecycle';
 import { DownloadPool } from './pool';
 import { finalizePageProgress } from './progress';
-import { classifyPageStop, partitionPageItemsForCatchup, shouldAdvancePageCursor } from './progress-policy';
+import {
+  classifyPageStop,
+  partitionPageItemsForCatchup,
+  partitionPageItemsForResume,
+  shouldAdvancePageCursor,
+  shouldUseCatchupMode,
+} from './progress-policy';
 import { clearRunGlobalsIfCurrent } from './run-resources';
 import { callSw, openKeepalivePort } from './sw-client';
 import { recordArchiveItemViaTransfer } from './transfer';
@@ -15,6 +21,7 @@ import { Panel, type PanelView } from './ui/panel';
 import { walkPage, type WalkItem } from './walker';
 
 const PAGE_LIMIT = 100;
+const DOWNLOAD_CALL_TIMEOUT_MS = 10 * 60 * 1000;
 
 type ArchiveStateDto = {
   peerId: number;
@@ -120,21 +127,36 @@ async function onStart(): Promise<void> {
   pool = runPool;
 
   try {
+    const previousState = await callSw<ArchiveStateDto | null>({ kind: 'getState', peerId: peer.peerId });
+    const catchupMode = shouldUseCatchupMode(previousState?.status, previousState?.counts.failed ?? 0);
     await callSw<ArchiveStateDto>({ kind: 'init', peerId: peer.peerId, title: peer.title, username: peer.username });
     const state = await callSw<ArchiveStateDto | null>({ kind: 'getState', peerId: peer.peerId });
     if (!state) throw new Error('NO_STATE');
 
-    const seenIds = unpackSeenIds(state.seenIdsPacked);
+    let seenIds = unpackSeenIds(state.seenIdsPacked);
     let offsetId = state.cursor.offsetId;
     let reachedCompletionBoundary = false;
     let stoppedByFailure = false;
 
-    while (isRunActive(peer.peerId, runId)) {
+    stoppedByFailure = await retryStoredFailures(runPool, peer, runId, runTokens, seenIds);
+    if (!stoppedByFailure) {
+      const refreshedState = await callSw<ArchiveStateDto | null>({ kind: 'getState', peerId: peer.peerId });
+      if (refreshedState) {
+        seenIds = unpackSeenIds(refreshedState.seenIdsPacked);
+        if (previousState?.status === 'completed' && refreshedState.counts.failed === 0 && offsetId === 0) {
+          reachedCompletionBoundary = true;
+        }
+      }
+    }
+
+    while (!reachedCompletionBoundary && !stoppedByFailure && isRunActive(peer.peerId, runId)) {
       await waitIfPaused();
       if (!isRunActive(peer.peerId, runId)) break;
 
       const page = await walkPage(bridge, peer.peerId, offsetId, PAGE_LIMIT);
-      const partition = partitionPageItemsForCatchup(page.items, (item) => seenIds.has(item.meta.messageId));
+      const partition = catchupMode
+        ? partitionPageItemsForCatchup(page.items, (item) => seenIds.has(item.meta.messageId))
+        : partitionPageItemsForResume(page.items, (item) => seenIds.has(item.meta.messageId));
       const fresh = partition.freshCandidates.filter((item) => !seenIds.has(item.meta.messageId));
       const sawSeenDownloadable = partition.sawSeenDownloadable;
       await releaseMediaRefs([...partition.releasableItems.map((item) => item.mediaRef), ...page.skippedMediaRefs]);
@@ -215,6 +237,58 @@ async function onStart(): Promise<void> {
   }
 }
 
+async function retryStoredFailures(
+  runPool: DownloadPool,
+  peer: PeerInfo,
+  runId: number,
+  runTokens: Set<string>,
+  seenIds: Set<number>
+): Promise<boolean> {
+  const failures = await callSw<ArchiveFailure[]>({ kind: 'getFailures', peerId: peer.peerId }).catch(() => []);
+  await Promise.all(
+    failures
+      .filter((failure) => seenIds.has(failure.messageId))
+      .map((failure) => callSw({ kind: 'clearFailure', peerId: peer.peerId, messageId: failure.messageId }).catch(() => undefined))
+  );
+  const pendingFailures = failures.filter((failure) => !seenIds.has(failure.messageId));
+  if (pendingFailures.length === 0) return false;
+
+  const retryItems: WalkItem[] = [];
+  for (const failure of pendingFailures) {
+    await waitIfPaused();
+    if (!isRunActive(peer.peerId, runId)) break;
+    const item = await bridge
+      .call<WalkItem | null>(
+        'getMessageById',
+        {
+          peerId: peer.peerId,
+          messageId: failure.messageId,
+        },
+        30_000
+      )
+      .catch(() => null);
+    if (item?.mediaRef) {
+      retryItems.push(item);
+    } else {
+      await callSw({ kind: 'clearFailure', peerId: peer.peerId, messageId: failure.messageId }).catch(() => undefined);
+    }
+  }
+
+  if (retryItems.length > 0) setView({ found: view.found + retryItems.length, status: 'downloading' });
+
+  let retryHadFailure = false;
+  for (const item of retryItems) {
+    await waitIfPaused();
+    if (!isRunActive(peer.peerId, runId)) break;
+    enqueueDownload(runPool, peer.peerId, runId, item, runTokens, () => {
+      retryHadFailure = true;
+    });
+  }
+
+  await runPool.drain();
+  return retryHadFailure;
+}
+
 function enqueueDownload(
   runPool: DownloadPool,
   peerId: number,
@@ -234,11 +308,15 @@ function enqueueDownload(
         kind: item.mediaRef.kind,
         mimeType: item.mediaRef.mimeType,
       });
-      const result = await bridge.call<{ blob: Blob }>('downloadMedia', {
-        rawMediaToken: item.mediaRef.rawMediaToken,
-        fileName: filename,
-        requestId: item.meta.messageId,
-      });
+      const result = await bridge.call<{ blob: Blob }>(
+        'downloadMedia',
+        {
+          rawMediaToken: item.mediaRef.rawMediaToken,
+          fileName: filename,
+          requestId: item.meta.messageId,
+        },
+        DOWNLOAD_CALL_TIMEOUT_MS
+      );
       return { blob: result.blob, filename };
     },
     onSuccess: async ({ blob, filename }) => {

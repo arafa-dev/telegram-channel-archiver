@@ -199,6 +199,31 @@ describe('service-worker handler', () => {
     expect(JSON.parse(JSON.stringify(response.value))).toEqual(response.value);
   });
 
+  test('getFailures returns stored failure rows for retry planning', async () => {
+    const { swHandler } = await importWorker();
+    const failure = { messageId: 7847, reason: 'BRIDGE_TIMEOUT', lastTriedAt: '2026-05-19T09:40:19.701Z' };
+    idb.failures.set(42, [failure]);
+
+    const response = await swHandler({ kind: 'getFailures', peerId: 42 }, {});
+
+    expect(response).toEqual({ ok: true, value: [failure] });
+    expect(idb.readFailures).toHaveBeenCalledWith(42);
+  });
+
+  test('clearFailure removes a stale failure and decrements failed count', async () => {
+    const { swHandler } = await importWorker();
+    const state = storage.newArchiveState({ peerId: 42, title: 'News', username: null });
+    state.counts.failed = 1;
+    storage.states.set(42, state);
+    idb.failures.set(42, [{ messageId: 7847, reason: 'BRIDGE_TIMEOUT', lastTriedAt: '2026-05-19T09:40:19.701Z' }]);
+
+    const response = await swHandler({ kind: 'clearFailure', peerId: 42, messageId: 7847 }, {});
+
+    expect(response).toEqual({ ok: true, value: { removed: 1 } });
+    expect(idb.failures.get(42)).toEqual([]);
+    expect(storage.states.get(42)).toEqual(expect.objectContaining({ counts: expect.objectContaining({ failed: 0 }) }));
+  });
+
   test('recordSeen adds all message ids but counts skippedIds only', async () => {
     const { swHandler } = await importWorker();
     const state = storage.newArchiveState({ peerId: 42, title: 'News', username: null });
@@ -549,5 +574,18 @@ describe('service-worker handler', () => {
       'Archive complete',
       'News: 0 downloaded, 1 failed.'
     );
+  });
+
+  test('complete succeeds even when Chrome rejects the completion notification image', async () => {
+    const { swHandler } = await importWorker();
+    const state = storage.newArchiveState({ peerId: 42, title: 'News', username: null });
+    storage.states.set(42, state);
+    notifications.notify.mockRejectedValueOnce(new Error('Unable to download all specified images.'));
+
+    const response = await swHandler({ kind: 'complete', peerId: 42 }, {});
+
+    expect(response).toEqual({ ok: true, value: null });
+    expect(storage.states.get(42)).toEqual(expect.objectContaining({ status: 'completed' }));
+    expect(manifest.writeManifest).toHaveBeenLastCalledWith(expect.objectContaining({ peerId: 42, status: 'completed' }), []);
   });
 });

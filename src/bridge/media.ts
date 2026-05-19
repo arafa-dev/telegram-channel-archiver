@@ -53,7 +53,7 @@ export function extractMediaRef(media: any): MediaRef | null {
       mimeType: 'image/jpeg',
       fileName: null,
       photoSizes: extractPhotoSizes(Array.isArray(media.photo.sizes) ? media.photo.sizes : []),
-      rawMediaToken: registerMediaToken(media),
+      rawMediaToken: registerMediaToken(media.photo),
     };
   }
 
@@ -83,7 +83,7 @@ export function extractMediaRef(media: any): MediaRef | null {
       mimeType: videoMimeType,
       fileName: isRecord(fileNameAttr) && typeof fileNameAttr.file_name === 'string' ? fileNameAttr.file_name : null,
       videoVariants: [variant],
-      rawMediaToken: registerMediaToken(media),
+      rawMediaToken: registerMediaToken(doc),
     };
   }
 

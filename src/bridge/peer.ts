@@ -1,11 +1,11 @@
 import type { PeerId, PeerInfo } from '../shared/types';
 import type { TelegramHandles } from './resolve';
 
-export function getCurrentPeer(h: TelegramHandles): PeerInfo | null {
-  const peerId = h.appImManager.chat?.peerId as PeerId | undefined;
-  if (peerId === undefined || peerId === null) return null;
+export async function getCurrentPeer(h: TelegramHandles): Promise<PeerInfo | null> {
+  const peerId = normalizePeerId(h.appImManager?.chat?.peerId) ?? peerIdFromLocationHash();
+  if (peerId === null) return null;
 
-  const chat = h.appPeersManager.getPeer(peerId);
+  const chat = await h.appPeersManager.getPeer(peerId);
   if (!chat) return null;
 
   const title =
@@ -21,4 +21,16 @@ export function getCurrentPeer(h: TelegramHandles): PeerInfo | null {
     username: chat.username ?? null,
     type,
   };
+}
+
+function peerIdFromLocationHash(): PeerId | null {
+  const hash = globalThis.location?.hash ?? '';
+  const match = /^#(-?\d+)(?:$|[/?])/.exec(hash);
+  return normalizePeerId(match?.[1]);
+}
+
+function normalizePeerId(value: unknown): PeerId | null {
+  if (value === undefined || value === null) return null;
+  const peerId = Number(value);
+  return Number.isFinite(peerId) ? peerId : null;
 }

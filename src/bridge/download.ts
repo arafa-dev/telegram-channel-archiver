@@ -4,6 +4,9 @@ export interface DownloadProgressCallback {
   (loaded: number, total: number): void;
 }
 
+const DIRECT_DOWNLOAD_GRACE_MS = 750;
+const DIRECT_DOWNLOAD_TIMEOUT = Symbol('DIRECT_DOWNLOAD_TIMEOUT');
+
 export async function downloadMedia(
   h: TelegramHandles,
   rawMedia: any,
@@ -12,19 +15,36 @@ export async function downloadMedia(
 ): Promise<Blob> {
   const adm = h.appDownloadManager;
 
+  if (rawMedia?._ === 'document' && typeof h.apiFileManager?.downloadMedia === 'function') {
+    try {
+      const out = await withTimeout(
+        Promise.resolve(h.apiFileManager.downloadMedia({ media: rawMedia, fileName })),
+        5 * 60 * 1000
+      );
+      const blob = toBlob(out);
+      if (blob) return blob;
+    } catch {
+      // Keep Telegram manager fallbacks available for Web K builds where apiFileManager
+      // cannot serve this document directly.
+    }
+  }
+
   if (typeof adm.download === 'function') {
     try {
       const result = adm.download({ media: rawMedia, fileName });
       attachProgress(result, onProgress);
-      const out = await result;
-      const blob = toBlob(out);
-      if (blob) return blob;
+      const out = await waitForDirectDownload(result);
+      if (out !== DIRECT_DOWNLOAD_TIMEOUT) {
+        const blob = toBlob(out);
+        if (blob) return blob;
+      }
     } catch (e) {
-      console.warn('[tg-archive/bridge] appDownloadManager.download failed, trying downloadToDisc fallback:', e);
+      // Telegram Web K can throw here for media objects that still work through downloadToDisc.
+      // Treat the direct path as an optional fast path and keep the console clean.
     }
   }
 
-  return enqueueFallbackDownload(() => downloadToDiscBlob(adm, rawMedia, fileName));
+  return enqueueFallbackDownload(() => downloadToDiscBlob(adm, rawMedia, fileName, onProgress));
 }
 
 let fallbackQueue: Promise<void> = Promise.resolve();
@@ -52,6 +72,17 @@ function attachProgress(result: any, onProgress?: DownloadProgressCallback): voi
   }
 }
 
+function waitForDirectDownload(result: any): Promise<any | typeof DIRECT_DOWNLOAD_TIMEOUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<typeof DIRECT_DOWNLOAD_TIMEOUT>((resolve) => {
+    timer = setTimeout(() => resolve(DIRECT_DOWNLOAD_TIMEOUT), DIRECT_DOWNLOAD_GRACE_MS);
+  });
+
+  return Promise.race([Promise.resolve(result), timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
 function toBlob(out: any): Blob | null {
   if (out instanceof Blob) return out;
   if (out instanceof Uint8Array) return new Blob([copyToArrayBuffer(out)]);
@@ -71,49 +102,29 @@ function copyToArrayBuffer(view: ArrayBufferView): ArrayBuffer {
   return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength) as ArrayBuffer;
 }
 
-function downloadToDiscBlob(adm: any, rawMedia: any, fileName: string): Promise<Blob> {
-  return new Promise<Blob>((resolve, reject) => {
-    if (typeof adm.downloadToDisc !== 'function') {
-      reject(new Error('DOWNLOAD_UNAVAILABLE'));
-      return;
-    }
+async function downloadToDiscBlob(
+  adm: any,
+  rawMedia: any,
+  fileName: string,
+  onProgress?: DownloadProgressCallback
+): Promise<Blob> {
+  if (typeof adm.downloadToDisc !== 'function') throw new Error('DOWNLOAD_UNAVAILABLE');
 
-    const origCreate = URL.createObjectURL;
-    let settled = false;
-    let restored = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+  const result = adm.downloadToDisc({ media: rawMedia, fileName }, true);
+  attachProgress(result, onProgress);
+  const out = await withTimeout(Promise.resolve(result), 5 * 60 * 1000);
+  const blob = toBlob(out);
+  if (!blob) throw new Error('DOWNLOAD_EMPTY');
+  return blob;
+}
 
-    const restore = () => {
-      if (restored) return;
-      restored = true;
-      URL.createObjectURL = origCreate;
-      if (timer !== undefined) clearTimeout(timer);
-    };
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('DOWNLOAD_TIMEOUT')), timeoutMs);
+  });
 
-    const settle = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      restore();
-      fn();
-    };
-
-    URL.createObjectURL = (value: Blob | MediaSource) => {
-      if (value instanceof Blob) {
-        settle(() => resolve(value));
-      }
-      return origCreate.call(URL, value);
-    };
-
-    timer = setTimeout(() => {
-      settle(() => reject(new Error('DOWNLOAD_TIMEOUT')));
-    }, 5 * 60 * 1000);
-
-    try {
-      Promise.resolve(adm.downloadToDisc({ media: rawMedia, fileName })).catch((e: unknown) => {
-        settle(() => reject(e));
-      });
-    } catch (e) {
-      settle(() => reject(e));
-    }
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
   });
 }
