@@ -53,7 +53,16 @@ const idb = vi.hoisted(() => {
   return {
     failures,
     appendFailure: vi.fn(async (peerId: number, failure: any) => {
-      failures.set(peerId, [...(failures.get(peerId) ?? []), failure]);
+      const existing = failures.get(peerId) ?? [];
+      const withoutSameMessage = existing.filter((stored) => stored.messageId !== failure.messageId);
+      failures.set(peerId, [...withoutSameMessage, failure]);
+      return withoutSameMessage.length === existing.length;
+    }),
+    removeFailuresByMessageId: vi.fn(async (peerId: number, messageId: number) => {
+      const existing = failures.get(peerId) ?? [];
+      const kept = existing.filter((failure) => failure.messageId !== messageId);
+      failures.set(peerId, kept);
+      return existing.length - kept.length;
     }),
     readFailures: vi.fn(async (peerId: number) => failures.get(peerId) ?? []),
   };
@@ -132,6 +141,10 @@ describe('service-worker handler', () => {
     install.registerBridge.mockClear();
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   test('registers the MAIN-world bridge on install and startup events', async () => {
     const { onInstalled, onStartup } = await importWorker();
     const installedListener = onInstalled.addListener.mock.calls[0]?.[0];
@@ -156,6 +169,19 @@ describe('service-worker handler', () => {
     expect(response.value).toEqual(expect.objectContaining({ peerId: 42, seenIdsPacked: packSeenIds(new Set()) }));
     expect((response.value as { seenIds?: unknown }).seenIds).toBeUndefined();
     expect(JSON.parse(JSON.stringify(response.value))).toEqual(response.value);
+  });
+
+  test('init restarts an existing archive by persisting in-progress status', async () => {
+    const { swHandler } = await importWorker();
+    const state = storage.newArchiveState({ peerId: 42, title: 'News', username: null });
+    state.status = 'completed';
+    storage.states.set(42, state);
+
+    const response = await swHandler({ kind: 'init', peerId: 42, title: 'News', username: null }, {});
+
+    expect(response).toEqual(expect.objectContaining({ ok: true }));
+    expect(storage.states.get(42)).toEqual(expect.objectContaining({ status: 'in_progress' }));
+    expect(storage.writeArchive).toHaveBeenCalledWith(expect.objectContaining({ peerId: 42, status: 'in_progress' }));
   });
 
   test('getState returns a JSON-safe DTO with packed seen ids', async () => {
@@ -336,6 +362,169 @@ describe('service-worker handler', () => {
 
     expect(response).toEqual({ ok: true, value: { filename: 'photo (1).jpg' } });
     expect(ndjson.rows[0]).toEqual(expect.objectContaining({ filename: 'photo (1).jpg' }));
+  });
+
+  test('recordItemFromTransfer clears prior failures for the same message and decrements failed count', async () => {
+    const { swHandler } = await importWorker();
+    const state = storage.newArchiveState({ peerId: 42, title: 'News', username: null });
+    storage.states.set(42, state);
+    const failure = { messageId: item.messageId, reason: 'DOWNLOAD_FAILED', lastTriedAt: '2026-05-18T10:00:00.000Z' };
+
+    await swHandler({ kind: 'recordFailure', peerId: 42, failure }, {});
+    const response = await recordViaTransfer(swHandler, {
+      transferId: 'retry-success',
+      peerId: 42,
+      item,
+      bytes: new Uint8Array([1, 2, 3]),
+      mimeType: 'image/jpeg',
+    });
+    await swHandler({ kind: 'flushPersist', peerId: 42 }, {});
+
+    expect(response).toEqual({ ok: true, value: { filename: 'photo.jpg' } });
+    expect(idb.removeFailuresByMessageId).toHaveBeenCalledWith(42, item.messageId);
+    expect(idb.failures.get(42)).toEqual([]);
+    expect(storage.states.get(42)).toEqual(expect.objectContaining({
+      counts: { downloaded: 1, skipped: 0, failed: 0 },
+      seenIds: new Set([item.messageId]),
+    }));
+    expect(manifest.writeManifest).toHaveBeenLastCalledWith(expect.objectContaining({ peerId: 42 }), []);
+  });
+
+  test('recordItemFromTransfer never decrements failed count below zero when clearing duplicate failures', async () => {
+    const { swHandler } = await importWorker();
+    const state = storage.newArchiveState({ peerId: 42, title: 'News', username: null });
+    storage.states.set(42, state);
+    idb.failures.set(42, [
+      { messageId: item.messageId, reason: 'one', lastTriedAt: '2026-05-18T10:00:00.000Z' },
+      { messageId: item.messageId, reason: 'two', lastTriedAt: '2026-05-18T10:01:00.000Z' },
+    ]);
+
+    const response = await recordViaTransfer(swHandler, {
+      transferId: 'retry-duplicates',
+      peerId: 42,
+      item,
+      bytes: new Uint8Array([1, 2, 3]),
+      mimeType: 'image/jpeg',
+    });
+
+    expect(response).toEqual({ ok: true, value: { filename: 'photo.jpg' } });
+    expect(storage.states.get(42)).toEqual(expect.objectContaining({
+      counts: { downloaded: 1, skipped: 0, failed: 0 },
+    }));
+  });
+
+  test('service-worker item transfers reject oversized totals and chunks', async () => {
+    const { swHandler } = await importWorker();
+    const state = storage.newArchiveState({ peerId: 42, title: 'News', username: null });
+    storage.states.set(42, state);
+
+    await expect(swHandler({
+      kind: 'beginItemTransfer',
+      transferId: 'huge',
+      peerId: 42,
+      item,
+      mimeType: 'application/octet-stream',
+      totalBytes: 512 * 1024 * 1024 + 1,
+    }, {})).resolves.toEqual({ ok: false, error: 'TRANSFER_TOO_LARGE' });
+
+    await expect(swHandler({
+      kind: 'beginItemTransfer',
+      transferId: 'chunk-too-large',
+      peerId: 42,
+      item,
+      mimeType: 'application/octet-stream',
+      totalBytes: 100_000,
+    }, {})).resolves.toEqual({ ok: true, value: null });
+    await expect(swHandler({
+      kind: 'appendItemTransferChunk',
+      transferId: 'chunk-too-large',
+      index: 0,
+      data: 'A'.repeat(80 * 1024),
+    }, {})).resolves.toEqual({ ok: false, error: 'CHUNK_TOO_LARGE' });
+    await expect(swHandler({ kind: 'recordItemFromTransfer', transferId: 'chunk-too-large' }, {})).resolves.toEqual({
+      ok: false,
+      error: 'UNKNOWN_TRANSFER',
+    });
+  });
+
+  test('service-worker item transfers enforce max active transfers and release slots on abort', async () => {
+    const { swHandler } = await importWorker();
+
+    for (let index = 0; index < 8; index += 1) {
+      await expect(swHandler({
+        kind: 'beginItemTransfer',
+        transferId: `transfer-${index}`,
+        peerId: 42,
+        item,
+        mimeType: 'text/plain',
+        totalBytes: 0,
+      }, {})).resolves.toEqual({ ok: true, value: null });
+    }
+
+    await expect(swHandler({
+      kind: 'beginItemTransfer',
+      transferId: 'transfer-8',
+      peerId: 42,
+      item,
+      mimeType: 'text/plain',
+      totalBytes: 0,
+    }, {})).resolves.toEqual({ ok: false, error: 'TOO_MANY_TRANSFERS' });
+
+    await expect(swHandler({ kind: 'abortItemTransfer', transferId: 'transfer-0' }, {})).resolves.toEqual({ ok: true, value: null });
+    await expect(swHandler({
+      kind: 'beginItemTransfer',
+      transferId: 'transfer-8',
+      peerId: 42,
+      item,
+      mimeType: 'text/plain',
+      totalBytes: 0,
+    }, {})).resolves.toEqual({ ok: true, value: null });
+  });
+
+  test('service-worker item transfers clean up after TTL and permit id reuse', async () => {
+    vi.useFakeTimers();
+    const { swHandler } = await importWorker();
+
+    await expect(swHandler({
+      kind: 'beginItemTransfer',
+      transferId: 'ttl-transfer',
+      peerId: 42,
+      item,
+      mimeType: 'text/plain',
+      totalBytes: 0,
+    }, {})).resolves.toEqual({ ok: true, value: null });
+    await expect(swHandler({
+      kind: 'beginItemTransfer',
+      transferId: 'ttl-transfer',
+      peerId: 42,
+      item,
+      mimeType: 'text/plain',
+      totalBytes: 0,
+    }, {})).resolves.toEqual({ ok: false, error: 'TRANSFER_EXISTS' });
+
+    vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+
+    await expect(swHandler({
+      kind: 'beginItemTransfer',
+      transferId: 'ttl-transfer',
+      peerId: 42,
+      item,
+      mimeType: 'text/plain',
+      totalBytes: 0,
+    }, {})).resolves.toEqual({ ok: true, value: null });
+  });
+
+  test('flushPersist can persist an error status before writing the manifest', async () => {
+    const { swHandler } = await importWorker();
+    const state = storage.newArchiveState({ peerId: 42, title: 'News', username: null });
+    state.status = 'completed';
+    storage.states.set(42, state);
+
+    const response = await swHandler({ kind: 'flushPersist', peerId: 42, status: 'error' }, {});
+
+    expect(response).toEqual({ ok: true, value: null });
+    expect(storage.states.get(42)).toEqual(expect.objectContaining({ status: 'error' }));
+    expect(manifest.writeManifest).toHaveBeenLastCalledWith(expect.objectContaining({ peerId: 42, status: 'error' }), []);
   });
 
   test('recordFailure persists failures and complete flushes persisted failures after worker restart', async () => {

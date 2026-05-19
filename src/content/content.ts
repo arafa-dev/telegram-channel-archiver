@@ -194,11 +194,14 @@ async function onStart(): Promise<void> {
       await callSw({ kind: 'complete', peerId: peer.peerId });
       setView({ status: 'completed' });
     } else if (isRunActive(peer.peerId, runId) && stoppedByFailure) {
-      await callSw({ kind: 'flushPersist', peerId: peer.peerId }).catch(() => undefined);
+      await callSw({ kind: 'flushPersist', peerId: peer.peerId, status: 'error' }).catch(() => undefined);
       setView({ status: 'error', error: 'Archive stopped after failed downloads. Retry this channel to continue.' });
     }
   } catch (e: unknown) {
-    if (isRunActive(peer.peerId, runId)) setView({ status: 'error', error: errorMessage(e) });
+    if (isRunActive(peer.peerId, runId)) {
+      await callSw({ kind: 'flushPersist', peerId: peer.peerId, status: 'error' }).catch(() => undefined);
+      setView({ status: 'error', error: errorMessage(e) });
+    }
   } finally {
     await releaseTokens(runTokens);
     disconnectPort(runKeepalivePort);
@@ -311,7 +314,7 @@ async function onCancel(): Promise<void> {
   pauseResolvers.splice(0).forEach((resolve) => resolve());
   pool?.clearQueue();
   const peerId = activePeerId ?? currentPeer?.peerId;
-  if (peerId !== undefined && peerId !== null) await callSw({ kind: 'flushPersist', peerId }).catch(() => undefined);
+  if (peerId !== undefined && peerId !== null) await callSw({ kind: 'flushPersist', peerId, status: 'paused' }).catch(() => undefined);
   if (keepalivePort) disconnectPort(keepalivePort);
   keepalivePort = null;
   activePeerId = null;
@@ -324,11 +327,13 @@ async function handlePeerChange(peerId: number | null): Promise<void> {
   paused = false;
   pauseResolvers.splice(0).forEach((resolve) => resolve());
   pool?.clearQueue();
+  const wasIdle = activePeerId === null && pool === null && keepalivePort === null;
   if (peerId !== null) await callSw({ kind: 'flushPersist', peerId }).catch(() => undefined);
   if (keepalivePort) disconnectPort(keepalivePort);
   keepalivePort = null;
   pool = null;
   await refreshPeer();
+  if (wasIdle) return;
   setView({ status: 'idle', error: 'Archive stopped because the channel changed.' });
 }
 

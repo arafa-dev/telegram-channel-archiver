@@ -66,20 +66,21 @@ export function extractMediaRef(media: any): MediaRef | null {
     const videoAttr = attrs.find((a: any) => a._ === 'documentAttributeVideo');
     const fileNameAttr = attrs.find((a: any) => a._ === 'documentAttributeFilename');
     if (!isRecord(videoAttr)) return null;
+    const videoMimeType = mime === 'image/gif' ? 'video/mp4' : mime;
 
     const variant: VideoVariant = {
       width: toFiniteNumberOrNull(videoAttr.w) ?? 0,
       height: toFiniteNumberOrNull(videoAttr.h) ?? 0,
       durationSec: toFiniteNumberOrNull(videoAttr.duration) ?? 0,
       byteSize: toFiniteNumberOrNull(doc.size),
-      mimeType: mime,
+      mimeType: videoMimeType,
       isStreaming: true,
       isDocumentAttachment: false,
     };
 
     return {
       kind: 'video',
-      mimeType: mime,
+      mimeType: videoMimeType,
       fileName: isRecord(fileNameAttr) && typeof fileNameAttr.file_name === 'string' ? fileNameAttr.file_name : null,
       videoVariants: [variant],
       rawMediaToken: registerMediaToken(media),

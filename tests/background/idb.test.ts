@@ -2,6 +2,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import {
   appendFailure,
   deleteNdjson,
+  removeFailuresByMessageId,
   readFailures,
   readNdjson,
   writeFailures,
@@ -45,6 +46,17 @@ describe('background IndexedDB wrappers', () => {
     await expect(readFailures(123)).resolves.toEqual([first, second]);
     await writeFailures(123, [second]);
     await expect(readFailures(123)).resolves.toEqual([second]);
+  });
+
+  test('removeFailuresByMessageId removes all matching failures and reports the number removed', async () => {
+    const first = { messageId: 1, reason: 'DOWNLOAD_FAILED', lastTriedAt: '2026-05-18T10:00:00.000Z' };
+    const retry = { messageId: 1, reason: 'NETWORK_ERROR', lastTriedAt: '2026-05-18T10:01:00.000Z' };
+    const other = { messageId: 2, reason: 'FLOOD_WAIT_5', lastTriedAt: '2026-05-18T10:02:00.000Z' };
+    await writeFailures(123, [first, retry, other]);
+
+    await expect(removeFailuresByMessageId(123, 1)).resolves.toBe(2);
+
+    await expect(readFailures(123)).resolves.toEqual([other]);
   });
 
   test('writeNdjson waits for transaction completion after request success', async () => {

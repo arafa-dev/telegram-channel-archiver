@@ -69,7 +69,7 @@ describe('extractMediaRef', () => {
     ]);
   });
 
-  it('extracts streamable video documents preserving Telegram mime type', () => {
+  it('extracts animated GIF documents as MP4 videos for Telegram Web K downloads', () => {
     const media = {
       _: 'messageMediaDocument',
       document: {
@@ -86,7 +86,7 @@ describe('extractMediaRef', () => {
 
     expect(extracted).toEqual({
       kind: 'video',
-      mimeType: 'image/gif',
+      mimeType: 'video/mp4',
       fileName: 'clip.gif',
       videoVariants: [
         {
@@ -94,7 +94,7 @@ describe('extractMediaRef', () => {
           height: 360,
           durationSec: 12,
           byteSize: 4096,
-          mimeType: 'image/gif',
+          mimeType: 'video/mp4',
           isStreaming: true,
           isDocumentAttachment: false,
         },

@@ -1,7 +1,7 @@
 import { installKeepalive } from './keepalive';
 import { registerBridge } from './install';
 import { downloadBlob } from './downloads';
-import { appendFailure, readFailures } from './idb';
+import { appendFailure, readFailures, removeFailuresByMessageId } from './idb';
 import { writeManifest } from './manifest-writer';
 import { appendItem, flushItemsToDisk } from './ndjson-writer';
 import { notify } from './notifications';
@@ -22,10 +22,16 @@ const itemTransfers = new Map<
     mimeType: string;
     totalBytes: number;
     chunks: Map<number, Uint8Array>;
+    receivedBytes: number;
+    ttlTimer: ReturnType<typeof setTimeout>;
   }
 >();
 const FLUSH_EVERY_ITEMS = 50;
 const FLUSH_EVERY_MS = 30_000;
+const ITEM_TRANSFER_MAX_BASE64_CHUNK_CHARS = 72 * 1024;
+const ITEM_TRANSFER_MAX_BYTES = 512 * 1024 * 1024;
+const ITEM_TRANSFER_MAX_ACTIVE = 8;
+const ITEM_TRANSFER_TTL_MS = 5 * 60 * 1000;
 
 type ArchiveStateDto = Omit<ArchiveState, 'seenIds'> & { seenIdsPacked: string };
 
@@ -103,6 +109,8 @@ async function recordDownloadedItem(peerId: number, item: ArchiveItem, bytes: Ar
     await appendItem(state, finalItem);
     state.seenIds.add(finalItem.messageId);
     state.counts.downloaded += 1;
+    const removedFailures = await removeFailuresByMessageId(peerId, finalItem.messageId);
+    if (removedFailures > 0) state.counts.failed = Math.max(0, state.counts.failed - removedFailures);
     await writeArchive(state);
 
     const dirty = dirtyFor(peerId);
@@ -111,6 +119,13 @@ async function recordDownloadedItem(peerId: number, item: ArchiveItem, bytes: Ar
 
     return { ok: true as const, value: { filename: finalItem.filename } };
   });
+}
+
+function deleteItemTransfer(transferId: string): void {
+  const transfer = itemTransfers.get(transferId);
+  if (!transfer) return;
+  clearTimeout(transfer.ttlTimer);
+  itemTransfers.delete(transferId);
 }
 
 function base64ToBytes(data: string): Uint8Array {
@@ -130,7 +145,6 @@ function reconstructTransferBytes(transferId: string): ArrayBuffer {
   for (let expected = 0; expected < ordered.length; expected++) {
     const [index, chunk] = ordered[expected]!;
     if (index !== expected) throw new Error('TRANSFER_CHUNK_GAP');
-    if (offset + chunk.byteLength > bytes.byteLength) throw new Error('TRANSFER_TOO_LARGE');
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
@@ -146,6 +160,9 @@ export const swHandler: SwHandler = async (req, _sender) => {
         let state = await readArchive(req.peerId);
         if (!state) {
           state = newArchiveState({ peerId: req.peerId, title: req.title, username: req.username });
+          await writeArchive(state);
+        } else if (state.status !== 'in_progress') {
+          state.status = 'in_progress';
           await writeArchive(state);
         }
         return { ok: true, value: toArchiveStateDto(state) };
@@ -177,12 +194,18 @@ export const swHandler: SwHandler = async (req, _sender) => {
 
     case 'beginItemTransfer': {
       if (itemTransfers.has(req.transferId)) return { ok: false, error: 'TRANSFER_EXISTS' };
+      if (req.totalBytes > ITEM_TRANSFER_MAX_BYTES) return { ok: false, error: 'TRANSFER_TOO_LARGE' };
+      if (itemTransfers.size >= ITEM_TRANSFER_MAX_ACTIVE) return { ok: false, error: 'TOO_MANY_TRANSFERS' };
       itemTransfers.set(req.transferId, {
         peerId: req.peerId,
         item: req.item,
         mimeType: req.mimeType,
         totalBytes: req.totalBytes,
         chunks: new Map(),
+        receivedBytes: 0,
+        ttlTimer: setTimeout(() => {
+          itemTransfers.delete(req.transferId);
+        }, ITEM_TRANSFER_TTL_MS),
       });
       return { ok: true, value: null };
     }
@@ -190,7 +213,17 @@ export const swHandler: SwHandler = async (req, _sender) => {
     case 'appendItemTransferChunk': {
       const transfer = itemTransfers.get(req.transferId);
       if (!transfer) return { ok: false, error: 'UNKNOWN_TRANSFER' };
-      transfer.chunks.set(req.index, base64ToBytes(req.data));
+      if (req.data.length > ITEM_TRANSFER_MAX_BASE64_CHUNK_CHARS) {
+        deleteItemTransfer(req.transferId);
+        return { ok: false, error: 'CHUNK_TOO_LARGE' };
+      }
+      const chunk = base64ToBytes(req.data);
+      if (transfer.receivedBytes + chunk.byteLength > transfer.totalBytes) {
+        deleteItemTransfer(req.transferId);
+        return { ok: false, error: 'TRANSFER_TOO_LARGE' };
+      }
+      transfer.chunks.set(req.index, chunk);
+      transfer.receivedBytes += chunk.byteLength;
       return { ok: true, value: null };
     }
 
@@ -199,25 +232,25 @@ export const swHandler: SwHandler = async (req, _sender) => {
       if (!transfer) return { ok: false, error: 'UNKNOWN_TRANSFER' };
       try {
         const bytes = reconstructTransferBytes(req.transferId);
-        itemTransfers.delete(req.transferId);
+        deleteItemTransfer(req.transferId);
         return recordDownloadedItem(transfer.peerId, transfer.item, bytes, transfer.mimeType);
       } catch (e) {
-        itemTransfers.delete(req.transferId);
+        deleteItemTransfer(req.transferId);
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
     }
 
     case 'abortItemTransfer': {
-      itemTransfers.delete(req.transferId);
+      deleteItemTransfer(req.transferId);
       return { ok: true, value: null };
     }
 
     case 'recordFailure': {
       return withPeerQueue(req.peerId, async () => {
-        await appendFailure(req.peerId, req.failure);
+        const added = await appendFailure(req.peerId, req.failure);
         const state = await readArchive(req.peerId);
         if (state) {
-          state.counts.failed += 1;
+          if (added) state.counts.failed += 1;
           await writeArchive(state);
         }
         await maybeFlush(req.peerId);
@@ -227,6 +260,13 @@ export const swHandler: SwHandler = async (req, _sender) => {
 
     case 'flushPersist':
       return withPeerQueue(req.peerId, async () => {
+        if (req.status) {
+          const state = await readArchive(req.peerId);
+          if (state) {
+            state.status = req.status;
+            await writeArchive(state);
+          }
+        }
         await maybeFlush(req.peerId, true);
         return { ok: true, value: null };
       });

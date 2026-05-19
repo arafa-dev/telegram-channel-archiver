@@ -72,8 +72,17 @@ export function writeFailures(peerId: number, failures: ArchiveFailure[]): Promi
   return tx(FAILURES_STORE, 'readwrite', (s) => s.put([...failures], String(peerId)));
 }
 
-export async function appendFailure(peerId: number, failure: ArchiveFailure): Promise<void> {
+export async function appendFailure(peerId: number, failure: ArchiveFailure): Promise<boolean> {
   const failures = await readFailures(peerId);
-  failures.push(failure);
-  await writeFailures(peerId, failures);
+  const withoutSameMessage = failures.filter((existing) => existing.messageId !== failure.messageId);
+  await writeFailures(peerId, [...withoutSameMessage, failure]);
+  return withoutSameMessage.length === failures.length;
+}
+
+export async function removeFailuresByMessageId(peerId: number, messageId: number): Promise<number> {
+  const failures = await readFailures(peerId);
+  const remaining = failures.filter((failure) => failure.messageId !== messageId);
+  const removed = failures.length - remaining.length;
+  if (removed > 0) await writeFailures(peerId, remaining);
+  return removed;
 }
