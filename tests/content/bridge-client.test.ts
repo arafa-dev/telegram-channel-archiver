@@ -56,6 +56,60 @@ describe('BridgeClient', () => {
     await timedOut;
   });
 
+  test('ready resolves from ping when bridgeReady fired before client construction', async () => {
+    dispatch(encodeEvt('bridgeReady'));
+    const { BridgeClient } = await import('../../src/content/bridge-client');
+    const bridge = new BridgeClient({ callTimeoutMs: 100 });
+
+    const ready = bridge.ready(1_000);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const req = posted[0] as ReqEnvelope;
+    expect(req).toEqual(expect.objectContaining({ kind: 'req', op: 'ping' }));
+    dispatch(encodeRes(req.id, true, { ready: true }));
+
+    await expect(ready).resolves.toBeUndefined();
+  });
+
+  test('ready keeps probing when initial ping is missed before the bridge listener exists', async () => {
+    const { BridgeClient } = await import('../../src/content/bridge-client');
+    const bridge = new BridgeClient({ callTimeoutMs: 25 });
+
+    const ready = bridge.ready(1_000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect((posted[0] as ReqEnvelope).op).toBe('ping');
+
+    await vi.advanceTimersByTimeAsync(25);
+    await vi.waitFor(() => expect(posted.length).toBeGreaterThan(1));
+    const retryReq = posted.at(-1) as ReqEnvelope;
+    expect(retryReq.op).toBe('ping');
+    dispatch(encodeRes(retryReq.id, true, { ready: true }));
+
+    await expect(ready).resolves.toBeUndefined();
+  });
+
+  test('ready timeout cancels the in-flight ping so late responses are ignored', async () => {
+    const { BridgeClient } = await import('../../src/content/bridge-client');
+    const bridge = new BridgeClient({ callTimeoutMs: 1_000 });
+
+    const ready = bridge.ready(50);
+    await vi.advanceTimersByTimeAsync(0);
+    const timedOutReq = posted[0] as ReqEnvelope;
+
+    const rejected = expect(ready).rejects.toThrow('BRIDGE_NOT_READY');
+    await vi.advanceTimersByTimeAsync(50);
+    await rejected;
+
+    dispatch(encodeRes(timedOutReq.id, true, { ready: true }));
+
+    const retryReady = bridge.ready(1_000);
+    await vi.advanceTimersByTimeAsync(0);
+    const retryReq = posted[1] as ReqEnvelope;
+    expect(retryReq).toEqual(expect.objectContaining({ kind: 'req', op: 'ping' }));
+    dispatch(encodeRes(retryReq.id, true, { ready: true }));
+    await expect(retryReady).resolves.toBeUndefined();
+  });
+
   test('removes pending calls after timeout and ignores late responses', async () => {
     const { BridgeClient } = await import('../../src/content/bridge-client');
     const bridge = new BridgeClient({ callTimeoutMs: 100 });

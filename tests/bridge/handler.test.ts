@@ -18,6 +18,16 @@ function handles(appDownloadManager: unknown): TelegramHandles {
 }
 
 describe('handleBridgeReq downloadMedia token lifecycle', () => {
+  it('responds to ping after Telegram handles are resolved', async () => {
+    await expect(
+      handleBridgeReq(
+        { source: 'tg-archive', kind: 'req', id: 1, op: 'ping' },
+        handles({ download: vi.fn() }),
+        vi.fn()
+      )
+    ).resolves.toEqual({ ready: true });
+  });
+
   it('keeps the media token after transient download failure so retry can reuse it', async () => {
     const media = { _: 'messageMediaPhoto', photo: { sizes: [] } };
     const token = extractMediaRef(media)?.rawMediaToken;

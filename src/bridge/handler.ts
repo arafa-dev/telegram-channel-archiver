@@ -15,6 +15,9 @@ export async function handleBridgeReq(
   postMessage: BridgePostMessage = window.postMessage.bind(window)
 ): Promise<unknown> {
   switch (req.op) {
+    case 'ping':
+      return { ready: true };
+
     case 'getCurrentPeer':
       return getCurrentPeer(handles);
 

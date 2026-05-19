@@ -12,6 +12,7 @@ type Pending = {
   timer: ReturnType<typeof setTimeout> | null;
 };
 type EventListener = (payload: unknown) => void;
+type ReadyResolver = { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
 
 export interface BridgeClientOptions {
   callTimeoutMs?: number;
@@ -22,9 +23,11 @@ export class BridgeClient {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   private readonly listeners = new Map<BridgeEvent, Set<EventListener>>();
-  private readonly readyResolvers: Array<{ resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }> = [];
+  private readonly readyResolvers: ReadyResolver[] = [];
   private readonly windowRef: Window;
   private readonly callTimeoutMs: number;
+  private readyProbeActive = false;
+  private readyProbeCancel: (() => void) | null = null;
   private isReady = false;
 
   constructor(options: BridgeClientOptions = {}) {
@@ -34,15 +37,22 @@ export class BridgeClient {
   }
 
   call<T = unknown>(op: BridgeOp, args?: unknown): Promise<T> {
-    const id = this.nextId++;
+    return this.createRequest<T>(op, args, this.callTimeoutMs).promise;
+  }
 
-    return new Promise<T>((resolve, reject) => {
+  private createRequest<T = unknown>(
+    op: BridgeOp,
+    args: unknown,
+    timeoutMs: number
+  ): { promise: Promise<T>; cancel: () => void } {
+    const id = this.nextId++;
+    const promise = new Promise<T>((resolve, reject) => {
       const timer =
-        this.callTimeoutMs > 0
+        timeoutMs > 0
           ? setTimeout(() => {
               this.pending.delete(id);
               reject(new Error('BRIDGE_TIMEOUT'));
-            }, this.callTimeoutMs)
+            }, timeoutMs)
           : null;
 
       this.pending.set(id, {
@@ -52,6 +62,17 @@ export class BridgeClient {
       });
       this.windowRef.postMessage(encodeReq(id, op, args), '*');
     });
+
+    return {
+      promise,
+      cancel: () => {
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        this.pending.delete(id);
+        if (pending.timer) clearTimeout(pending.timer);
+        pending.reject(new Error('BRIDGE_CANCELLED'));
+      },
+    };
   }
 
   on(evt: BridgeEvent, fn: EventListener): void {
@@ -73,15 +94,63 @@ export class BridgeClient {
           clearTimeout(entry.timer);
           resolve();
         },
-        reject,
+        reject: (error: Error) => {
+          clearTimeout(entry.timer);
+          reject(error);
+        },
         timer: setTimeout(() => {
           const index = this.readyResolvers.indexOf(entry);
           if (index >= 0) this.readyResolvers.splice(index, 1);
+          if (this.readyResolvers.length === 0) this.cancelReadyProbe();
           reject(new Error('BRIDGE_NOT_READY'));
         }, timeoutMs),
       };
       this.readyResolvers.push(entry);
+      this.ensureReadyProbe();
     });
+  }
+
+  private ensureReadyProbe(): void {
+    if (this.readyProbeActive) return;
+    this.readyProbeActive = true;
+    void this.probeReady();
+  }
+
+  private async probeReady(): Promise<void> {
+    try {
+      while (!this.isReady && this.readyResolvers.length > 0) {
+        const request = this.createRequest<{ ready?: unknown }>('ping', undefined, this.readyProbeTimeoutMs());
+        this.readyProbeCancel = request.cancel;
+        try {
+          const value = await request.promise;
+          if (this.readyProbeCancel === request.cancel) this.readyProbeCancel = null;
+          if (value?.ready === true) {
+            this.markReady();
+            return;
+          }
+        } catch {
+          if (this.readyProbeCancel === request.cancel) this.readyProbeCancel = null;
+        }
+      }
+    } finally {
+      this.readyProbeActive = false;
+      if (!this.isReady && this.readyResolvers.length > 0) this.ensureReadyProbe();
+    }
+  }
+
+  private readyProbeTimeoutMs(): number {
+    return this.callTimeoutMs > 0 ? Math.min(this.callTimeoutMs, 250) : 250;
+  }
+
+  private cancelReadyProbe(): void {
+    this.readyProbeCancel?.();
+    this.readyProbeCancel = null;
+  }
+
+  private markReady(): void {
+    this.isReady = true;
+    this.cancelReadyProbe();
+    this.readyResolvers.splice(0).forEach((entry) => entry.resolve());
   }
 
   private onMessage(ev: MessageEvent): void {
@@ -110,8 +179,7 @@ export class BridgeClient {
 
   private handleEvent(evt: BridgeEvent, payload: unknown): void {
     if (evt === 'bridgeReady') {
-      this.isReady = true;
-      this.readyResolvers.splice(0).forEach((entry) => entry.resolve());
+      this.markReady();
       this.listeners.get(evt)?.forEach((listener) => listener(payload));
       return;
     }
