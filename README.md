@@ -13,14 +13,12 @@ This project is intended for personal archiving and research workflows. Use it o
 
 ## Download
 
-After the repository is public on GitHub, you can download the source in either of these ways:
+Download the source in either of these ways:
 
 ```sh
-git clone https://github.com/<owner>/telegram-channel-archiver.git
+git clone https://github.com/arafa-dev/telegram-channel-archiver.git
 cd telegram-channel-archiver
 ```
-
-Replace `<owner>` with the GitHub account or organization that hosts the repository.
 
 Or use GitHub's **Code** menu and choose **Download ZIP**.
 
